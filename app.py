@@ -13,7 +13,7 @@ from io import StringIO
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v2.3", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v2.4", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -29,9 +29,11 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# [수정] 오류 로그에 기반한 저장소 이름 ('dongpa6'로 추정됨)
-# 만약 여전히 에러가 나면 본인의 "아이디/저장소명" (예: "yongseong/dongpa6")으로 직접 적어주세요.
-REPO_NAME = "dongpa6" 
+# 👇👇👇 [여기를 수정하세요!] 👇👇👇
+# 본인의 "GitHub아이디/저장소이름"을 정확히 적어주세요.
+# 예시: "kimyongseong/dongpa6"
+REPO_KEY = "yongma11/dongpa6" 
+# 👆👆👆👆👆👆👆👆👆👆👆👆👆👆
 
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
@@ -42,20 +44,14 @@ JOURNAL_FILE = "trading_journal.csv"
 @st.cache_data(ttl=3600)
 def get_data_final(period='max'):
     try:
-        # SOXL 상장일 고려하여 2010년부터 로드 (안정성 확보)
-        df = yf.download(['QQQ', 'SOXL'], start='2010-01-01', progress=False, auto_adjust=False)
+        df = yf.download(['QQQ', 'SOXL'], start='2000-01-01', progress=False, auto_adjust=False)
         if isinstance(df.columns, pd.MultiIndex):
             try:
                 if 'Close' in df.columns.get_level_values(0): df = df.xs('Close', level=0, axis=1)
                 elif 'Close' in df.columns.get_level_values(1): df = df.xs('Close', level=1, axis=1)
                 else: df = df.xs('Close', level='Price', axis=1)
             except: pass
-        
-        # 데이터가 비어있거나 NaN이 있으면 처리
-        if df.empty or df['SOXL'].isna().all():
-            return None
-            
-        df = df.ffill().bfill() # 결측치 보정
+        if df.empty: return None
         df.index = df.index.tz_localize(None)
         return df
     except Exception as e:
@@ -92,21 +88,14 @@ def calc_mode_series(df_qqq):
     weekly_mode = pd.Series(modes, index=qqq_weekly.index)
     return weekly_mode.resample('D').ffill(), rsi_series
 
+# [수정] 풀네임으로 직접 접근하는 안전한 함수
 def get_repo():
     g = Github(GH_TOKEN)
     try:
-        user = g.get_user()
-        # 1. 이름으로 정확히 찾기 시도
-        return user.get_repo(REPO_NAME)
+        return g.get_repo(REPO_KEY)
     except:
-        try:
-            # 2. 실패시 목록에서 검색 시도
-            for repo in user.get_repos():
-                if repo.name == REPO_NAME:
-                    return repo
-        except:
-            st.error(f"GitHub 저장소 '{REPO_NAME}'을 찾을 수 없습니다. 저장소 이름이 정확한지 확인해주세요.")
-            st.stop()
+        st.error(f"❌ GitHub 저장소 '{REPO_KEY}'를 찾을 수 없습니다. 아이디와 저장소 이름이 정확한지, 토큰 권한(Repo)이 있는지 확인해주세요.")
+        st.stop()
 
 def load_csv(filename, columns):
     try:
@@ -273,16 +262,13 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 오토마우스 v2.3 (Cloud Fix)")
+    st.title("💎 동파법 오토마우스 v2.4 (Connection Fix)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    # 데이터 로드 시도
     df = get_data_final()
-    
-    # [수정] 데이터 로드 실패 시 중단하고 알림 표시
     if df is None:
-        st.error("📉 주식 데이터를 불러오는데 실패했습니다. 잠시 후 새로고침 해주세요.")
+        st.error("📉 주식 데이터 로드 실패. 잠시 후 다시 시도해주세요.")
         return
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
@@ -334,13 +320,11 @@ def main():
         
         df_h = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
         
-        # [수정] b_qty 계산 안전장치 (0으로 나누기 방지)
         if soxl_price > 0:
             b_lim = prev_close * (1 + r['buy']/100)
             b_qty = int(slot_sz / soxl_price)
         else:
-            b_lim = 0
-            b_qty = 0
+            b_lim, b_qty = 0, 0
         
         moc_sell = 0
         loc_list = []
@@ -417,16 +401,18 @@ def main():
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         
         df_j = load_csv(JOURNAL_FILE, ["날짜", "원금", "수익금", "수익률"])
+        init_prin = 10000.0
         
         if not df_j.empty:
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             
+            init_prin = df_j['원금'].iloc[0]
             total_prof_j = df_j['수익금'].sum()
-            total_yield_j = (total_prof_j / auto_init_cap * 100)
+            total_yield_j = (total_prof_j / init_prin * 100) if init_prin > 0 else 0
             
             mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("🏁 초기 원금", f"${auto_init_cap:,.0f}")
+            mc1.metric("🏁 초기 원금", f"${init_prin:,.0f}")
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
@@ -454,7 +440,7 @@ def main():
                 
             df_chart = df_j.sort_values(by="날짜", ascending=True)
             df_chart['누적수익'] = df_chart['수익금'].cumsum()
-            df_chart['총자산'] = auto_init_cap + df_chart['누적수익']
+            df_chart['총자산'] = init_prin + df_chart['누적수익']
             
             st.markdown("---")
             st.line_chart(df_chart.set_index("날짜")['총자산'])
