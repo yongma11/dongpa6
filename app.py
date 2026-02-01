@@ -106,7 +106,7 @@ def get_repo():
         user = g.get_user()
         # 사용자의 모든 레포 중 이름이 일치하는 것 찾기 (대소문자 무시 등 처리 가능)
         # 우선 간단히 시도
-        return user.get_repo("dongpa-stock") 
+        return user.get_repo("dongpa6") 
     except:
         st.error("GitHub 저장소를 찾을 수 없습니다. 코드의 `get_repo` 함수에서 저장소 이름을 확인해주세요.")
         st.stop()
