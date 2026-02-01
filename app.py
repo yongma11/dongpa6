@@ -7,11 +7,13 @@ from datetime import datetime, timedelta
 import os
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
+from github import Github # GitHub 연동 라이브러리
+from io import StringIO
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 오토마우스 v2.1", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v2.2 (Cloud)", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -19,11 +21,24 @@ PARAMS = {
 }
 MAX_SLOTS = 7
 RESET_CYCLE = 10
+
+# GitHub 설정 (Secrets에서 가져옴)
+# 주의: Streamlit Cloud의 Secrets에 GH_TOKEN이 설정되어 있어야 합니다.
+try:
+    GH_TOKEN = st.secrets["general"]["GH_TOKEN"]
+except:
+    st.error("🚨 GitHub 토큰이 설정되지 않았습니다. Streamlit Secrets를 확인해주세요.")
+    st.stop()
+
+REPO_NAME = "kimyongseong/dongpa-stock" # [중요] 여기에 "본인아이디/저장소이름"을 적어주세요! 예: "userid/repo-name"
+# 만약 자동으로 찾게 하려면 아래 코드를 쓰지만, 명시하는 게 안전합니다.
+# 지금은 용성님이 만드신 저장소 이름을 정확히 몰라서, 실행 시 에러가 나면 이 부분을 수정해야 합니다.
+
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수
+# 2. 데이터 & 엔진 함수 (GitHub 연동)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_data_final(period='max'):
@@ -71,21 +86,59 @@ def calc_mode_series(df_qqq):
     weekly_mode = pd.Series(modes, index=qqq_weekly.index)
     return weekly_mode.resample('D').ffill(), rsi_series
 
-def load_csv(filename, columns):
-    if os.path.exists(filename): return pd.read_csv(filename)
-    return pd.DataFrame(columns=columns)
+# [NEW] GitHub 파일 입출력 함수
+def get_repo():
+    g = Github(GH_TOKEN)
+    # 현재 실행 중인 저장소 정보를 자동으로 가져오려고 시도하거나 하드코딩
+    # Streamlit Cloud에서는 저장소 이름을 알기 어려우므로, 
+    # *** 아래 REPO_NAME 변수를 꼭 본인 저장소 이름으로 바꿔주세요! ***
+    # 예: 'hong-gildong/my-stock-app'
+    # 임시로 user객체에서 repos를 뒤져서 이름이 맞는걸 찾거나 해야하지만,
+    # 가장 확실한 건 아래처럼 본인 아이디/레포명을 적는 것입니다.
+    
+    # [수정 필요] 만약 에러가 난다면 이 부분을 본인 저장소 이름으로 바꾸세요.
+    # user = g.get_user()
+    # return user.get_repo("dongpa-stock") # 예시
+    
+    # 여기서는 'dongpa-stock'이라는 이름의 레포를 찾는다고 가정합니다.
+    # 만약 레포 이름이 다르면 아래 줄을 수정하세요.
+    try:
+        user = g.get_user()
+        # 사용자의 모든 레포 중 이름이 일치하는 것 찾기 (대소문자 무시 등 처리 가능)
+        # 우선 간단히 시도
+        return user.get_repo("dongpa-stock") 
+    except:
+        st.error("GitHub 저장소를 찾을 수 없습니다. 코드의 `get_repo` 함수에서 저장소 이름을 확인해주세요.")
+        st.stop()
 
-def save_csv(df, filename): df.to_csv(filename, index=False)
+def load_csv(filename, columns):
+    try:
+        repo = get_repo()
+        contents = repo.get_contents(filename)
+        csv_string = contents.decoded_content.decode("utf-8")
+        return pd.read_csv(StringIO(csv_string))
+    except:
+        # 파일이 없으면 빈 데이터프레임 리턴
+        return pd.DataFrame(columns=columns)
+
+def save_csv(df, filename):
+    repo = get_repo()
+    csv_string = df.to_csv(index=False)
+    try:
+        # 파일이 있으면 업데이트
+        contents = repo.get_contents(filename)
+        repo.update_file(contents.path, f"Update {filename} via Streamlit", csv_string, contents.sha)
+    except:
+        # 파일이 없으면 생성
+        repo.create_file(filename, f"Create {filename} via Streamlit", csv_string)
 
 def auto_sync_engine(df, start_date, init_cap):
     mode_daily, _ = calc_mode_series(df['QQQ'])
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
     sim_df.columns = ['Price', 'Mode']
-    
     end_date = datetime.now() - timedelta(days=1)
     mask = (sim_df.index >= pd.to_datetime(start_date)) & (sim_df.index <= pd.to_datetime(end_date))
     sim_df = sim_df[mask]
-    
     if sim_df.empty: return None, None
 
     sim_df['Prev_Price'] = sim_df['Price'].shift(1)
@@ -97,7 +150,6 @@ def auto_sync_engine(df, start_date, init_cap):
     slots = []
     journal = []
     cycle_days = 0
-    
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
 
     for date, row in sim_df.iterrows():
@@ -221,9 +273,14 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 오토마우스 v2.1")
+    st.title("💎 동파법 오토마우스 v2.2 (Cloud)")
     
-    tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩 (자동화)", "🧪 백테스트", "📚 전략 로직"])
+    # [중요] 저장소 이름 설정 가이드
+    # 코드 82번째 줄: return user.get_repo("dongpa-stock")
+    # 이 부분의 "dongpa-stock"이 실제 GitHub 저장소 이름과 같아야 합니다.
+    # 만약 에러가 나면 GitHub 저장소 이름을 확인하세요.
+
+    tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩 (Cloud 저장)", "🧪 백테스트", "📚 전략 로직"])
 
     df = get_data_final()
     if df is None: return
@@ -235,7 +292,7 @@ def main():
     prev_close = df['SOXL'].iloc[-2]
 
     # =====================================================
-    # TAB 1: 실전 트레이딩 (자동화 엔진 탑재)
+    # TAB 1: 실전 트레이딩
     # =====================================================
     with tab_trade:
         with st.sidebar:
@@ -244,19 +301,22 @@ def main():
             auto_init_cap = st.number_input("시작 원금 ($)", value=10000.0, step=100.0)
             
             if st.button("🔄 전략대로 자동 동기화 (Sync)", type="primary"):
-                with st.spinner("동기화 중..."):
+                with st.spinner("GitHub에서 데이터 동기화 중..."):
                     holdings_new, journal_new = auto_sync_engine(df, auto_start_date, auto_init_cap)
                     if holdings_new is not None:
                         save_csv(holdings_new, HOLDINGS_FILE)
                         save_csv(journal_new, JOURNAL_FILE)
-                        st.success("완료!")
+                        st.success("완료! (GitHub 저장됨)")
                         st.rerun()
                     else: st.error("실패")
             
             st.markdown("---")
-            if st.button("🗑️ 모든 데이터 초기화"):
-                if os.path.exists(HOLDINGS_FILE): os.remove(HOLDINGS_FILE)
-                if os.path.exists(JOURNAL_FILE): os.remove(JOURNAL_FILE)
+            if st.button("🗑️ 모든 데이터 초기화 (GitHub 삭제)"):
+                # 실제 삭제 대신 빈 파일로 덮어쓰기
+                empty_df = pd.DataFrame(columns=["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
+                save_csv(empty_df, HOLDINGS_FILE)
+                empty_j = pd.DataFrame(columns=["날짜", "원금", "수익금", "수익률"])
+                save_csv(empty_j, JOURNAL_FILE)
                 st.rerun()
 
             today = datetime.now().date()
@@ -304,16 +364,15 @@ def main():
         st.markdown("---")
 
         # ------------------------------------------------------------------
-        # 2. 티어 현황 (합계 기능 추가)
+        # 2. 티어 현황
         # ------------------------------------------------------------------
-        st.subheader("📊 나의 티어 현황 (자동 동기화)")
+        st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         
         if not df_h.empty:
             df_h['매수일'] = pd.to_datetime(df_h['매수일']).dt.date
             df_h.index = range(1, len(df_h) + 1)
             df_h.index.name = "티어"
             
-            # 수익률 계산
             current_yields = ((soxl_price - df_h['매수가']) / df_h['매수가'] * 100)
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
@@ -321,7 +380,7 @@ def main():
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
-            st.caption("👇 자동 동기화된 데이터입니다. (수정 가능)")
+            st.caption("👇 GitHub에 저장된 데이터입니다.")
             edited_h = st.data_editor(
                 df_h,
                 num_rows="dynamic",
@@ -335,7 +394,6 @@ def main():
                 }
             )
             
-            # [NEW] 전체 계좌 요약 (비교용)
             total_qty = edited_h['수량'].sum()
             total_invested = (edited_h['매수가'] * edited_h['수량']).sum()
             avg_price = total_invested / total_qty if total_qty > 0 else 0
@@ -343,26 +401,26 @@ def main():
             total_profit = current_val - total_invested
             total_yield_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
             
-            st.markdown("#### 📌 전체 계좌 요약 (비교용)")
+            st.markdown("#### 📌 전체 계좌 요약")
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("총 보유수량", f"{total_qty} 주")
             sc2.metric("통합 평단가", f"${avg_price:,.2f}")
             sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
             sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            if st.button("💾 티어 수동 수정 저장"):
+            if st.button("💾 티어 수정 저장 (GitHub)"):
                 save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
                 save_csv(edited_h[save_cols], HOLDINGS_FILE)
-                st.success("저장됨")
+                st.success("GitHub에 저장되었습니다!")
                 st.rerun()
-        else: st.info("현재 보유 중인 티어가 없습니다.")
+        else: st.info("보유 티어 없음")
         
         st.markdown("---")
         
         # ------------------------------------------------------------------
         # 3. 매매일지
         # ------------------------------------------------------------------
-        st.subheader("📝 매매 수익 기록장 (자동 기록)")
+        st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         
         df_j = load_csv(JOURNAL_FILE, ["날짜", "원금", "수익금", "수익률"])
         
@@ -378,7 +436,7 @@ def main():
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
-            st.caption("👇 수익 실현 기록 (최신순)")
+            st.caption("👇 GitHub에 저장된 기록")
             df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
             
             edited_j = st.data_editor(
@@ -393,14 +451,13 @@ def main():
                 }
             )
             
-            if st.button("💾 일지 수동 수정 저장"):
+            if st.button("💾 일지 수정 저장 (GitHub)"):
                 if not edited_j.empty:
                     edited_j['수익률'] = edited_j.apply(lambda row: (row['수익금']/row['원금']*100) if row['원금']>0 else 0, axis=1)
                 save_csv(edited_j, JOURNAL_FILE)
-                st.success("저장됨")
+                st.success("GitHub에 저장되었습니다!")
                 st.rerun()
                 
-            # 그래프
             df_chart = df_j.sort_values(by="날짜", ascending=True)
             df_chart['누적수익'] = df_chart['수익금'].cumsum()
             df_chart['총자산'] = auto_init_cap + df_chart['누적수익']
@@ -408,9 +465,9 @@ def main():
             st.markdown("---")
             st.line_chart(df_chart.set_index("날짜")['총자산'])
         else:
-            st.info("아직 실현된 수익이 없습니다.")
+            st.info("실현된 수익 없음")
 
-        with st.expander("✍️ (필요시) 수동 기록 추가"):
+        with st.expander("✍️ 수동 기록 추가"):
             with st.form("journal_manual"):
                 jc1, jc2, jc3 = st.columns(3)
                 j_d = jc1.date_input("정산일", value=today)
@@ -422,9 +479,6 @@ def main():
                     save_csv(df_j, JOURNAL_FILE)
                     st.rerun()
 
-    # =====================================================
-    # TAB 2: 백테스트
-    # =====================================================
     with tab_backtest:
         st.header("🧪 백테스트 성과분석")
         bt_init_cap = st.number_input("백테스트 초기 자본 ($)", value=10000.0, step=1000.0)
@@ -433,7 +487,7 @@ def main():
         end_d = bc2.date_input("검증 종료일", value=today, min_value=datetime(2000, 1, 1))
         
         if st.button("🚀 분석 실행"):
-            with st.spinner("데이터 분석 중..."):
+            with st.spinner("분석 중..."):
                 res = run_backtest_fixed(df, start_d, end_d, bt_init_cap)
                 if res is not None:
                     final = res['Equity'].iloc[-1]
@@ -453,7 +507,6 @@ def main():
                     st.markdown("#### 📊 통합 성과 차트")
                     plt.style.use('default')
                     fig, ax1 = plt.subplots(figsize=(12, 6))
-                    
                     color = 'tab:blue'
                     ax1.set_xlabel('Date')
                     ax1.set_ylabel('Total Equity ($)', color=color, fontweight='bold')
@@ -461,7 +514,6 @@ def main():
                     ax1.tick_params(axis='y', labelcolor=color)
                     ax1.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
                     ax1.grid(True, linestyle='--', alpha=0.3)
-                    
                     ax2 = ax1.twinx()
                     color = 'tab:red'
                     ax2.set_ylabel('Drawdown (%)', color=color, fontweight='bold')
@@ -469,33 +521,29 @@ def main():
                     ax2.tick_params(axis='y', labelcolor=color)
                     ax2.set_ylim(-100, 5)
                     ax2.yaxis.set_major_formatter(mtick.PercentFormatter())
-                    
                     plt.title(f"Portfolio Performance vs Risk", fontweight='bold')
                     plt.tight_layout()
                     st.pyplot(fig)
                 else: st.error("데이터 부족")
 
-    # =====================================================
-    # TAB 3: 로직
-    # =====================================================
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
-        ### 1. 전략 개요 (Philosophy)
+        ### 1. 전략 개요
         * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
         * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
         
-        ### 2. 시장 모드 판단
-        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
-
+        ### 2. 시장 모드
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)** 분석
+        
         | 모드 | 조건 (Condition) |
         | :--- | :--- |
         | **🛡️ Safe** | `RSI > 65` & `하락` / `40 < RSI < 50` & `하락` / `50선 하향 돌파` |
         | **⚔️ Offense** | `RSI < 35` & `상승` / `50 < RSI < 60` & `상승` / `50선 상향 돌파` |
         
         ### 3. 실전 매매 규칙
-        **중요:** 매도 시에는 현재 모드가 아니라 **'매수했을 당시의 모드(Sticky)'** 규칙을 따릅니다.
-
+        **Sticky Rule:** 매수 당시의 모드를 매도 시까지 유지
+        
         | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
         | :--- | :--- | :--- |
         | **매수 타점** | -3.0% 이하 | -5.0% 이하 |
