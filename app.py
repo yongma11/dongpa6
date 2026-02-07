@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v3.1", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v3.2", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -30,7 +30,7 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# 저장소 이름
+# 저장소 이름 (사용자 ID/Repo)
 REPO_KEY = "yongma11/dongpa6" 
 
 HOLDINGS_FILE = "my_holdings.csv"
@@ -163,6 +163,9 @@ def auto_sync_engine(df, start_date, init_cap):
         price = row['Price']
         mode = row['Mode']
         
+        current_holdings_val = sum(s['shares'] * price for s in slots)
+        current_total_equity = real_cash + current_holdings_val
+
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -293,29 +296,21 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
     }
     
-    # [NEW] 연도별 상세 분석 (수익률, MDD, 기말자산)
+    # 연도별 통계 계산
     yearly_stats = []
     years = res_df.index.year.unique()
     
-    # MDD 계산용 로컬 함수
     def calc_mdd(series):
         peak = series.cummax()
         dd = (series - peak) / peak
         return dd.min()
 
-    prev_equity = init_cap # 첫 해 수익률 계산용
+    prev_equity = init_cap
     
     for yr in years:
         df_yr = res_df[res_df.index.year == yr]
-        
-        # 1. 기말 자산
         end_equity = df_yr['Equity'].iloc[-1]
-        
-        # 2. 수익률 (해당 연도 순수익률)
-        # 공식: (기말자산 - 기초자산) / 기초자산
         yr_return = (end_equity - prev_equity) / prev_equity
-        
-        # 3. MDD (해당 연도 내 최대 낙폭)
         yr_mdd = calc_mdd(df_yr['Equity'])
         
         yearly_stats.append({
@@ -324,8 +319,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
             "MDD": yr_mdd,
             "기말자산": end_equity
         })
-        
-        prev_equity = end_equity # 다음 해의 기초자산은 올해 기말자산
+        prev_equity = end_equity
 
     df_yearly = pd.DataFrame(yearly_stats).set_index("연도")
     
@@ -335,7 +329,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v3.1")
+    st.title("💎 동파법 마스터 v3.2")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -362,10 +356,7 @@ def main():
             auto_init_cap = st.number_input("시작 원금 ($)", value=default_cap, step=100.0)
             
             if st.button("🔄 전략대로 자동 동기화 (Sync)", type="primary"):
-                new_settings = {
-                    "start_date": auto_start_date.strftime("%Y-%m-%d"),
-                    "init_cap": auto_init_cap
-                }
+                new_settings = {"start_date": auto_start_date.strftime("%Y-%m-%d"), "init_cap": auto_init_cap}
                 save_settings(new_settings)
                 
                 with st.spinner("GitHub에서 데이터 동기화 중..."):
@@ -574,27 +565,17 @@ def main():
                     st.pyplot(fig)
                     
                     st.markdown("#### 📅 연도별 성과표")
-                    # [NEW] 예쁜 표로 출력 (막대 그래프 포함)
-                    st.dataframe(
-                        df_yearly,
-                        use_container_width=True,
-                        column_config={
-                            "수익률": st.column_config.ProgressColumn(
-                                "수익률", 
-                                format="%.2f%%",
-                                min_value=-0.5, max_value=1.5, # 대략적 범위
-                            ),
-                            "MDD": st.column_config.ProgressColumn(
-                                "MDD (최대낙폭)",
-                                format="%.2f%%",
-                                min_value=-0.8, max_value=0,
-                            ),
-                            "기말자산": st.column_config.NumberColumn(
-                                "기말 자산($)",
-                                format="$%.0f"
-                            )
-                        }
-                    )
+                    
+                    # [NEW] 가로형(Transpose) 테이블 포맷팅
+                    df_yearly_formatted = df_yearly.copy()
+                    df_yearly_formatted['수익률'] = df_yearly_formatted['수익률'].apply(lambda x: f"{x*100:.1f}%")
+                    df_yearly_formatted['MDD'] = df_yearly_formatted['MDD'].apply(lambda x: f"{x*100:.1f}%")
+                    df_yearly_formatted['기말자산'] = df_yearly_formatted['기말자산'].apply(lambda x: f"${x:,.0f}")
+                    
+                    # 행/열 뒤집기 (연도가 컬럼으로 감)
+                    df_display = df_yearly_formatted.T
+                    
+                    st.dataframe(df_display, use_container_width=True)
                 else: st.error("데이터 부족")
 
     with tab_logic:
