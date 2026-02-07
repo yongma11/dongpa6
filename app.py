@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v3.2", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v3.3", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -296,7 +296,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
     }
     
-    # 연도별 통계 계산
     yearly_stats = []
     years = res_df.index.year.unique()
     
@@ -306,30 +305,22 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         return dd.min()
 
     prev_equity = init_cap
-    
     for yr in years:
         df_yr = res_df[res_df.index.year == yr]
         end_equity = df_yr['Equity'].iloc[-1]
         yr_return = (end_equity - prev_equity) / prev_equity
         yr_mdd = calc_mdd(df_yr['Equity'])
-        
-        yearly_stats.append({
-            "연도": yr,
-            "수익률": yr_return,
-            "MDD": yr_mdd,
-            "기말자산": end_equity
-        })
+        yearly_stats.append({"연도": yr, "수익률": yr_return, "MDD": yr_mdd, "기말자산": end_equity})
         prev_equity = end_equity
 
     df_yearly = pd.DataFrame(yearly_stats).set_index("연도")
-    
     return res_df, metrics, df_yearly
 
 # ---------------------------------------------------------
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v3.2")
+    st.title("💎 동파법 마스터 v3.3")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -566,21 +557,57 @@ def main():
                     
                     st.markdown("#### 📅 연도별 성과표")
                     
-                    # [NEW] 가로형(Transpose) 테이블 포맷팅
-                    df_yearly_formatted = df_yearly.copy()
-                    df_yearly_formatted['수익률'] = df_yearly_formatted['수익률'].apply(lambda x: f"{x*100:.1f}%")
-                    df_yearly_formatted['MDD'] = df_yearly_formatted['MDD'].apply(lambda x: f"{x*100:.1f}%")
-                    df_yearly_formatted['기말자산'] = df_yearly_formatted['기말자산'].apply(lambda x: f"${x:,.0f}")
+                    # [NEW] 가로형 포맷팅 (이미지 스타일)
+                    df_yearly_fmt = df_yearly.copy()
+                    df_yearly_fmt['수익률'] = df_yearly_fmt['수익률'].apply(lambda x: f"{x*100:.1f}%")
+                    df_yearly_fmt['MDD'] = df_yearly_fmt['MDD'].apply(lambda x: f"{x*100:.1f}%")
+                    df_yearly_fmt['기말자산'] = df_yearly_fmt['기말자산'].apply(lambda x: f"${x:,.0f}")
                     
-                    # 행/열 뒤집기 (연도가 컬럼으로 감)
-                    df_display = df_yearly_formatted.T
-                    
-                    st.dataframe(df_display, use_container_width=True)
+                    st.dataframe(df_yearly_fmt.T, use_container_width=True)
                 else: st.error("데이터 부족")
 
+    # [복원된 전략 상세 내용]
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""...""")
+        st.markdown("""
+        ### 1. 전략 개요 (Philosophy)
+        * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
+        * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
+        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
+
+        ---
+
+        ### 2. 시장 모드 판단 (Market Modes)
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
+
+        | 모드 | 조건 (Condition) | 시장 상황 해석 |
+        | :--- | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
+        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
+        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
+        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
+        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
+        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
+        
+        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
+
+        ---
+
+        ### 3. 실전 매매 규칙 (Action Rules)
+        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
+
+        | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
+        | :--- | :--- | :--- |
+        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
+        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
+        | **손절 기한** | **35 거래일** | **7 거래일** |
+
+        ---
+
+        ### 4. 자금 관리 (Money Management)
+        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입.
+        * **10일 리셋:** 2주마다 총 자산 기준으로 슬롯 크기 재산정 (복리 효과).
+        """)
 
 if __name__ == "__main__":
     main()
