@@ -9,12 +9,12 @@ import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from github import Github
 from io import StringIO
-import json # 설정값 저장을 위한 라이브러리
+import json
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v3.0", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v3.1", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -30,13 +30,12 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# 저장소 이름 (사용자 정보 반영)
+# 저장소 이름
 REPO_KEY = "yongma11/dongpa6" 
 
-# 파일명 정의
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
-SETTINGS_FILE = "settings.json" # [NEW] 설정값 저장 파일
+SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
 # 2. 데이터 & 엔진 함수
@@ -96,14 +95,13 @@ def get_repo():
         st.error(f"❌ GitHub 저장소 '{REPO_KEY}'를 찾을 수 없습니다.")
         st.stop()
 
-# [NEW] 설정값 로드/저장 함수
 def load_settings():
     try:
         repo = get_repo()
         contents = repo.get_contents(SETTINGS_FILE)
         return json.loads(contents.decoded_content.decode("utf-8"))
     except:
-        return {"start_date": "2026-01-23", "init_cap": 10000.0} # 기본값
+        return {"start_date": "2026-01-23", "init_cap": 10000.0}
 
 def save_settings(settings_dict):
     try:
@@ -141,7 +139,6 @@ def save_csv(df, filename):
     except Exception as e:
         st.error(f"GitHub 저장 실패: {e}")
 
-# [수정] 자동 동기화 엔진 (자산 기준 수익률 계산)
 def auto_sync_engine(df, start_date, init_cap):
     mode_daily, _ = calc_mode_series(df['QQQ'])
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
@@ -166,10 +163,6 @@ def auto_sync_engine(df, start_date, init_cap):
         price = row['Price']
         mode = row['Mode']
         
-        # 현재 총 자산 가치 계산 (현금 + 보유주식 가치)
-        current_holdings_val = sum(s['shares'] * price for s in slots)
-        current_total_equity = real_cash + current_holdings_val
-
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -188,13 +181,11 @@ def auto_sync_engine(df, start_date, init_cap):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
                 
-                # [수정] 수익률을 '당시 총 자산' 기준으로 계산 (요청사항 반영)
-                # 원금 컬럼에는 '당시 총 자산'을 기록
                 equity_at_sell = real_cash + sum(x['shares'] * price for x in slots)
                 
                 journal_entry = {
                     "날짜": date.date(),
-                    "원금": equity_at_sell, # 투자 원금이 아닌 전체 계좌 자산
+                    "원금": equity_at_sell,
                     "수익금": prof,
                     "수익률": (prof / equity_at_sell) * 100 if equity_at_sell > 0 else 0
                 }
@@ -238,7 +229,6 @@ def auto_sync_engine(df, start_date, init_cap):
     
     return df_holdings, df_journal
 
-# [수정] 백테스트 엔진 (지표 추가)
 def run_backtest_fixed(df, start_date, end_date, init_cap):
     mode_daily, _ = calc_mode_series(df['QQQ'])
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
@@ -254,8 +244,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     slots = []
     equity_curve = []
     cycle_days = 0
-    
-    # 지표용 변수
     gross_profit = 0.0
     gross_loss = 0.0
     
@@ -301,24 +289,53 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     
     res_df = pd.DataFrame(equity_curve).set_index('Date')
     
-    # 추가 지표 계산
     metrics = {
-        'gross_profit': gross_profit,
-        'gross_loss': gross_loss,
         'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
     }
     
-    # 연도별 성과 계산
-    yearly_returns = res_df['Equity'].resample('YE').last().pct_change()
-    yearly_returns.index = yearly_returns.index.year
+    # [NEW] 연도별 상세 분석 (수익률, MDD, 기말자산)
+    yearly_stats = []
+    years = res_df.index.year.unique()
     
-    return res_df, metrics, yearly_returns
+    # MDD 계산용 로컬 함수
+    def calc_mdd(series):
+        peak = series.cummax()
+        dd = (series - peak) / peak
+        return dd.min()
+
+    prev_equity = init_cap # 첫 해 수익률 계산용
+    
+    for yr in years:
+        df_yr = res_df[res_df.index.year == yr]
+        
+        # 1. 기말 자산
+        end_equity = df_yr['Equity'].iloc[-1]
+        
+        # 2. 수익률 (해당 연도 순수익률)
+        # 공식: (기말자산 - 기초자산) / 기초자산
+        yr_return = (end_equity - prev_equity) / prev_equity
+        
+        # 3. MDD (해당 연도 내 최대 낙폭)
+        yr_mdd = calc_mdd(df_yr['Equity'])
+        
+        yearly_stats.append({
+            "연도": yr,
+            "수익률": yr_return,
+            "MDD": yr_mdd,
+            "기말자산": end_equity
+        })
+        
+        prev_equity = end_equity # 다음 해의 기초자산은 올해 기말자산
+
+    df_yearly = pd.DataFrame(yearly_stats).set_index("연도")
+    
+    return res_df, metrics, df_yearly
 
 # ---------------------------------------------------------
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v3.0")
+    st.title("💎 동파법 마스터 v3.1")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -333,13 +350,11 @@ def main():
     soxl_price = df['SOXL'].iloc[-1]
     prev_close = df['SOXL'].iloc[-2]
 
-    # [설정 로드]
     settings = load_settings()
 
     with tab_trade:
         with st.sidebar:
             st.header("🤖 자동 동기화 설정")
-            # 저장된 설정값 불러오기
             default_date = datetime.strptime(settings.get("start_date", "2026-01-23"), "%Y-%m-%d").date()
             default_cap = float(settings.get("init_cap", 10000.0))
             
@@ -347,7 +362,6 @@ def main():
             auto_init_cap = st.number_input("시작 원금 ($)", value=default_cap, step=100.0)
             
             if st.button("🔄 전략대로 자동 동기화 (Sync)", type="primary"):
-                # [NEW] 설정값 저장
                 new_settings = {
                     "start_date": auto_start_date.strftime("%Y-%m-%d"),
                     "init_cap": auto_init_cap
@@ -457,14 +471,12 @@ def main():
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = load_csv(JOURNAL_FILE, ["날짜", "원금", "수익금", "수익률"])
         
-        # 원금(전체 자산) 표시 개선
         if not df_j.empty:
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             
             init_prin = auto_init_cap
             total_prof_j = df_j['수익금'].sum()
-            # 총 수익률 = 누적수익 / 시작원금
             total_yield_j = (total_prof_j / init_prin * 100)
             
             mc1, mc2, mc3 = st.columns(3)
@@ -472,7 +484,7 @@ def main():
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
-            st.caption("👇 GitHub 기록 (최신순) / *원금 = 매도 당시 총 자산")
+            st.caption("👇 GitHub 기록 (최신순)")
             df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
             
             edited_j = st.data_editor(
@@ -486,7 +498,6 @@ def main():
             
             if st.button("💾 일지 수정 저장 (GitHub)"):
                 if not edited_j.empty:
-                    # 수익률 재계산: 수익금 / 원금(당시 자산) * 100
                     edited_j['수익률'] = edited_j.apply(lambda row: (row['수익금']/row['원금']*100) if row['원금']>0 else 0, axis=1)
                 save_csv(edited_j, JOURNAL_FILE)
                 st.success("GitHub에 저장되었습니다!")
@@ -513,7 +524,6 @@ def main():
                     save_csv(df_j, JOURNAL_FILE)
                     st.rerun()
 
-    # 백테스트 탭
     with tab_backtest:
         st.header("🧪 백테스트 성과분석")
         bt_init_cap = st.number_input("백테스트 초기 자본 ($)", value=10000.0, step=1000.0)
@@ -523,7 +533,7 @@ def main():
         
         if st.button("🚀 분석 실행"):
             with st.spinner("분석 중..."):
-                res, metrics, yearly_returns = run_backtest_fixed(df, start_d, end_d, bt_init_cap)
+                res, metrics, df_yearly = run_backtest_fixed(df, start_d, end_d, bt_init_cap)
                 if res is not None:
                     final = res['Equity'].iloc[-1]
                     ret = (final/bt_init_cap) - 1
@@ -563,13 +573,33 @@ def main():
                     plt.tight_layout()
                     st.pyplot(fig)
                     
-                    st.markdown("#### 📅 연도별 수익률")
-                    st.dataframe(yearly_returns.to_frame("수익률").style.format("{:.2%}"), use_container_width=True)
+                    st.markdown("#### 📅 연도별 성과표")
+                    # [NEW] 예쁜 표로 출력 (막대 그래프 포함)
+                    st.dataframe(
+                        df_yearly,
+                        use_container_width=True,
+                        column_config={
+                            "수익률": st.column_config.ProgressColumn(
+                                "수익률", 
+                                format="%.2f%%",
+                                min_value=-0.5, max_value=1.5, # 대략적 범위
+                            ),
+                            "MDD": st.column_config.ProgressColumn(
+                                "MDD (최대낙폭)",
+                                format="%.2f%%",
+                                min_value=-0.8, max_value=0,
+                            ),
+                            "기말자산": st.column_config.NumberColumn(
+                                "기말 자산($)",
+                                format="$%.0f"
+                            )
+                        }
+                    )
                 else: st.error("데이터 부족")
 
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""... (기존 로직 설명 유지) ...""")
+        st.markdown("""...""")
 
 if __name__ == "__main__":
     main()
