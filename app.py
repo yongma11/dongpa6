@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.3", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.4", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -30,7 +30,7 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# 👇 사용자 설정 (본인 Repo 주소 확인)
+# 👇 사용자 설정
 REPO_KEY = "yongma11/dongpa6" 
 
 HOLDINGS_FILE = "my_holdings.csv"
@@ -38,27 +38,23 @@ JOURNAL_FILE = "trading_journal.csv"
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수 (오류 방지 패치 적용됨)
+# 2. 데이터 & 엔진 함수
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_data_final(period='max'):
     try:
         start_date = '2010-01-01'
-        
-        # [패치] 티커별 개별 다운로드 후 병합 (안정성 강화)
         qqq = yf.download("QQQ", start=start_date, progress=False, auto_adjust=False)
         soxl = yf.download("SOXL", start=start_date, progress=False, auto_adjust=False)
         
         if qqq.empty or soxl.empty: return None
 
-        # 종가 추출 및 데이터프레임 정리
         if isinstance(qqq.columns, pd.MultiIndex): qqq = qqq.xs('Close', level=0, axis=1)
         else: qqq = qqq['Close']
         
         if isinstance(soxl.columns, pd.MultiIndex): soxl = soxl.xs('Close', level=0, axis=1)
         else: soxl = soxl['Close']
         
-        # 컬럼명 정리
         if 'QQQ' in qqq.columns: qqq = qqq['QQQ']
         elif len(qqq.columns) > 0: qqq = qqq.iloc[:, 0]
             
@@ -68,9 +64,7 @@ def get_data_final(period='max'):
         df = pd.DataFrame({'QQQ': qqq, 'SOXL': soxl})
         df = df.ffill().bfill().dropna()
         df.index = df.index.tz_localize(None)
-        
         return df
-
     except Exception as e:
         st.error(f"데이터 로딩 중 문제 발생: {e}")
         return None
@@ -142,7 +136,8 @@ def load_csv(filename, columns):
             try:
                 contents = repo.get_contents(filename)
                 csv_string = contents.decoded_content.decode("utf-8")
-                return pd.read_csv(StringIO(csv_string))
+                df = pd.read_csv(StringIO(csv_string))
+                return df
             except:
                 pass
     except:
@@ -341,7 +336,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.3 (Complete)")
+    st.title("💎 동파법 마스터 v4.4 (Bug Fix)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -356,11 +351,17 @@ def main():
     soxl_price = df['SOXL'].iloc[-1]
     prev_close = df['SOXL'].iloc[-2]
 
-    # 세션 초기화
+    # [수정된 부분] 데이터 로드 시 컬럼명 호환성 체크
     if 'holdings' not in st.session_state:
         st.session_state['holdings'] = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
+    
     if 'journal' not in st.session_state:
-        st.session_state['journal'] = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
+        # 일단 파일 로드
+        loaded_j = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
+        # 호환성 패치: '원금' 컬럼이 있으면 '총자산'으로 이름 변경
+        if '원금' in loaded_j.columns:
+            loaded_j.rename(columns={'원금': '총자산'}, inplace=True)
+        st.session_state['journal'] = loaded_j
     
     settings = load_settings()
 
@@ -483,7 +484,7 @@ def main():
         
         st.markdown("---")
         
-        # 3. 매매일지 (UI 업그레이드)
+        # 3. 매매일지
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
         init_prin = auto_init_cap
@@ -502,7 +503,6 @@ def main():
             
             st.markdown("")
             
-            # [NEW] Expander로 숨김 처리
             with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
                 st.caption("👇 GitHub 기록 (최신순 / 스크롤 가능)")
                 df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
@@ -608,43 +608,26 @@ def main():
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
-        ### 1. 전략 개요 (Philosophy)
+        ### 1. 전략 개요
         * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
         * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
-        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
-
-        ---
-
-        ### 2. 시장 모드 판단 (Market Modes)
-        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
-
-        | 모드 | 조건 (Condition) | 시장 상황 해석 |
-        | :--- | :--- | :--- |
-        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
-        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
-        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
-        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
-        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
-        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
         
-        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
-
-        ---
-
-        ### 3. 실전 매매 규칙 (Action Rules)
-        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
-
+        ### 2. 시장 모드 판단
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)** 분석
+        
+        | 모드 | 조건 (Condition) |
+        | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` / `40 < RSI < 50` & `하락` / `50선 하향 돌파` |
+        | **⚔️ Offense** | `RSI < 35` & `상승` / `50 < RSI < 60` & `상승` / `50선 상향 돌파` |
+        
+        ### 3. 실전 매매 규칙
+        **Sticky Rule:** 매수 당시의 모드를 매도 시까지 유지
+        
         | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
         | :--- | :--- | :--- |
-        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
-        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
-        | **손절 기한** | **35 거래일** | **7 거래일** |
-
-        ---
-
-        ### 4. 자금 관리 (Money Management)
-        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입.
-        * **10일 리셋:** 2주마다 총 자산 기준으로 슬롯 크기 재산정 (복리 효과).
+        | **매수 타점** | -3.0% 이하 | -5.0% 이하 |
+        | **익절 목표** | +0.5% | +3.0% |
+        | **손절 기한** | 35일 | 7일 |
         """)
 
 if __name__ == "__main__":
