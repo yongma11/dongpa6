@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.5", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.6", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -35,6 +35,7 @@ REPO_KEY = "yongma11/dongpa6"
 
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
+EQUITY_FILE = "equity_history.csv" # [NEW] 일별 자산 기록 파일
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
@@ -136,8 +137,7 @@ def load_csv(filename, columns):
             try:
                 contents = repo.get_contents(filename)
                 csv_string = contents.decoded_content.decode("utf-8")
-                df = pd.read_csv(StringIO(csv_string))
-                return df
+                return pd.read_csv(StringIO(csv_string))
             except:
                 pass
     except:
@@ -164,7 +164,7 @@ def auto_sync_engine(df, start_date, init_cap):
     end_date = datetime.now() - timedelta(days=1)
     mask = (sim_df.index >= pd.to_datetime(start_date)) & (sim_df.index <= pd.to_datetime(end_date))
     sim_df = sim_df[mask]
-    if sim_df.empty: return None, None
+    if sim_df.empty: return None, None, None
 
     sim_df['Prev_Price'] = sim_df['Price'].shift(1)
     sim_df = sim_df.dropna()
@@ -174,6 +174,8 @@ def auto_sync_engine(df, start_date, init_cap):
     cum_loss = 0.0
     slots = []
     journal = []
+    daily_equity = [] # [NEW] 일별 자산 기록
+    
     cycle_days = 0
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
 
@@ -190,6 +192,7 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
+        # 1. 매도 로직
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -199,8 +202,9 @@ def auto_sync_engine(df, start_date, init_cap):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
                 
-                remaining_shares_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
-                equity_at_sell = real_cash + rev + remaining_shares_val
+                # 매도 시점의 총자산 (추정)
+                current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
+                equity_at_sell = real_cash + rev + current_holdings_val
                 
                 journal_entry = {
                     "날짜": date.date(),
@@ -216,6 +220,7 @@ def auto_sync_engine(df, start_date, init_cap):
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
+        # 2. 매수 로직
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -236,6 +241,12 @@ def auto_sync_engine(df, start_date, init_cap):
                         '손절기한': cd.date(),
                         'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
                     })
+        
+        # 3. [NEW] 일별 자산 마감 (Mark-to-Market)
+        # 매매가 있든 없든 매일 기록
+        total_holdings_value = sum(s['shares'] * price for s in slots)
+        daily_total_equity = real_cash + total_holdings_value
+        daily_equity.append({"날짜": date.date(), "총자산": daily_total_equity})
     
     final_holdings = []
     for s in slots:
@@ -243,10 +254,8 @@ def auto_sync_engine(df, start_date, init_cap):
             "매수일": s['매수일'], "모드": s['모드'], "매수가": s['매수가'], 
             "수량": s['수량'], "목표가": s['목표가'], "손절기한": s['손절기한']
         })
-    df_holdings = pd.DataFrame(final_holdings)
-    df_journal = pd.DataFrame(journal)
     
-    return df_holdings, df_journal
+    return pd.DataFrame(final_holdings), pd.DataFrame(journal), pd.DataFrame(daily_equity)
 
 def run_backtest_fixed(df, start_date, end_date, init_cap):
     mode_daily, _ = calc_mode_series(df['QQQ'])
@@ -336,7 +345,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.5 (Graph Fix)")
+    st.title("💎 동파법 마스터 v4.6 (Smooth Graph)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -351,15 +360,15 @@ def main():
     soxl_price = df['SOXL'].iloc[-1]
     prev_close = df['SOXL'].iloc[-2]
 
-    # 세션 초기화 & 호환성 패치
+    # 세션 초기화
     if 'holdings' not in st.session_state:
         st.session_state['holdings'] = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
-    
     if 'journal' not in st.session_state:
         loaded_j = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
-        if '원금' in loaded_j.columns:
-            loaded_j.rename(columns={'원금': '총자산'}, inplace=True)
+        if '원금' in loaded_j.columns: loaded_j.rename(columns={'원금': '총자산'}, inplace=True)
         st.session_state['journal'] = loaded_j
+    if 'equity_history' not in st.session_state:
+        st.session_state['equity_history'] = load_csv(EQUITY_FILE, ["날짜", "총자산"])
     
     settings = load_settings()
 
@@ -377,13 +386,17 @@ def main():
                 save_settings(new_settings)
                 
                 with st.spinner("과거 데이터 시뮬레이션 및 클라우드 동기화 중..."):
-                    h_new, j_new = auto_sync_engine(df, auto_start_date, auto_init_cap)
+                    h_new, j_new, eq_new = auto_sync_engine(df, auto_start_date, auto_init_cap)
                     
                     if h_new is not None:
                         save_csv(h_new, HOLDINGS_FILE)
                         save_csv(j_new, JOURNAL_FILE)
+                        save_csv(eq_new, EQUITY_FILE) # 자산 파일 저장
+                        
                         st.session_state['holdings'] = h_new
                         st.session_state['journal'] = j_new
+                        st.session_state['equity_history'] = eq_new
+                        
                         st.success("완료! 데이터가 저장되었습니다.")
                         st.rerun()
                     else: st.error("동기화 실패")
@@ -392,10 +405,13 @@ def main():
             if st.button("🗑️ 데이터 초기화"):
                 empty_df = pd.DataFrame(columns=["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
                 empty_j = pd.DataFrame(columns=["날짜", "총자산", "수익금", "수익률"])
+                empty_eq = pd.DataFrame(columns=["날짜", "총자산"])
                 save_csv(empty_df, HOLDINGS_FILE)
                 save_csv(empty_j, JOURNAL_FILE)
+                save_csv(empty_eq, EQUITY_FILE)
                 st.session_state['holdings'] = empty_df
                 st.session_state['journal'] = empty_j
+                st.session_state['equity_history'] = empty_eq
                 st.rerun()
 
             today = datetime.now().date()
@@ -485,10 +501,12 @@ def main():
         # 3. 매매일지
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
+        # [NEW] 그래프용 데이터 (일별 자산)
+        df_eq = st.session_state['equity_history']
+        
         init_prin = auto_init_cap
         
         if not df_j.empty:
-            # 날짜 변환 및 정렬
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             
@@ -504,7 +522,6 @@ def main():
             
             with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
                 st.caption("👇 GitHub 기록 (최신순)")
-                # 표시는 최신순
                 df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
                 
                 edited_j = st.data_editor(
@@ -522,22 +539,24 @@ def main():
                         st.success("저장되었습니다!")
                         st.rerun()
             
-            # [수정된 그래프 로직: 일별 최종 자산만 추출하여 평탄화]
+            # [수정된 그래프: 일별 자산 파일 사용]
             st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
             
-            # 날짜순 정렬 후, '같은 날짜'가 있으면 그 날의 '마지막' 기록만 남김 (그래프 튀는 현상 방지)
-            df_chart = df_j.sort_values(by="날짜", ascending=True).copy()
-            df_chart = df_chart.drop_duplicates(subset=['날짜'], keep='last')
-            
-            fig, ax = plt.subplots(figsize=(10, 4))
-            ax.plot(df_chart['날짜'], df_chart['총자산'], color='#4CAF50', linewidth=2, marker='o', markersize=3)
-            ax.fill_between(df_chart['날짜'], df_chart['총자산'], init_prin, where=(df_chart['총자산'] >= init_prin), color='#4CAF50', alpha=0.1)
-            ax.fill_between(df_chart['날짜'], df_chart['총자산'], init_prin, where=(df_chart['총자산'] < init_prin), color='red', alpha=0.1)
-            ax.axhline(y=init_prin, color='gray', linestyle='--', alpha=0.5, label='원금')
-            ax.set_title("Total Equity Growth", fontweight='bold')
-            ax.grid(True, linestyle='--', alpha=0.3)
-            ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
-            st.pyplot(fig)
+            if not df_eq.empty:
+                df_eq['날짜'] = pd.to_datetime(df_eq['날짜'])
+                df_eq = df_eq.sort_values(by="날짜")
+                
+                fig, ax = plt.subplots(figsize=(10, 4))
+                ax.plot(df_eq['날짜'], df_eq['총자산'], color='#4CAF50', linewidth=2)
+                ax.fill_between(df_eq['날짜'], df_eq['총자산'], init_prin, where=(df_eq['총자산'] >= init_prin), color='#4CAF50', alpha=0.1)
+                ax.fill_between(df_eq['날짜'], df_eq['총자산'], init_prin, where=(df_eq['총자산'] < init_prin), color='red', alpha=0.1)
+                ax.axhline(y=init_prin, color='gray', linestyle='--', alpha=0.5, label='원금')
+                ax.set_title("Total Equity Growth", fontweight='bold')
+                ax.grid(True, linestyle='--', alpha=0.3)
+                ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
+                st.pyplot(fig)
+            else:
+                st.info("그래프 데이터가 없습니다. '자동 동기화'를 실행해주세요.")
         else:
             st.info("실현된 수익 없음.")
 
@@ -612,45 +631,7 @@ def main():
 
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""
-        ### 1. 전략 개요 (Philosophy)
-        * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
-        * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
-        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
-
-        ---
-
-        ### 2. 시장 모드 판단 (Market Modes)
-        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
-
-        | 모드 | 조건 (Condition) | 시장 상황 해석 |
-        | :--- | :--- | :--- |
-        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
-        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
-        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
-        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
-        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
-        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
-        
-        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
-
-        ---
-
-        ### 3. 실전 매매 규칙 (Action Rules)
-        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
-
-        | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
-        | :--- | :--- | :--- |
-        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
-        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
-        | **손절 기한** | **35 거래일** | **7 거래일** |
-
-        ---
-
-        ### 4. 자금 관리 (Money Management)
-        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입.
-        * **10일 리셋:** 2주마다 총 자산 기준으로 슬롯 크기 재산정 (복리 효과).
-        """)
+        st.markdown("""...""")
 
 if __name__ == "__main__":
     main()
