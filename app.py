@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 상수
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v3.3", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.2", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -30,8 +30,9 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# 저장소 이름 (사용자 ID/Repo)
+# 👇👇👇 [사용자 설정] 👇👇👇
 REPO_KEY = "yongma11/dongpa6" 
+# 👆👆👆👆👆👆👆👆👆👆👆👆👆
 
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
@@ -43,16 +44,19 @@ SETTINGS_FILE = "settings.json"
 @st.cache_data(ttl=3600)
 def get_data_final(period='max'):
     try:
-        df = yf.download(['QQQ', 'SOXL'], start='2000-01-01', progress=False, auto_adjust=False)
+        df = yf.download(['QQQ', 'SOXL'], start='2010-01-01', progress=False, auto_adjust=False)
         if isinstance(df.columns, pd.MultiIndex):
             try:
                 if 'Close' in df.columns.get_level_values(0): df = df.xs('Close', level=0, axis=1)
                 elif 'Close' in df.columns.get_level_values(1): df = df.xs('Close', level=1, axis=1)
                 else: df = df.xs('Close', level='Price', axis=1)
             except: pass
-        if df.empty: return None
+        
+        if df.empty or df['SOXL'].isna().all(): return None
+        
+        df = df.ffill().bfill()
         df.index = df.index.tz_localize(None)
-        return df.ffill().bfill()
+        return df
     except Exception as e:
         st.error(f"데이터 다운로드 오류: {e}")
         return None
@@ -101,7 +105,7 @@ def load_settings():
         contents = repo.get_contents(SETTINGS_FILE)
         return json.loads(contents.decoded_content.decode("utf-8"))
     except:
-        return {"start_date": "2026-01-23", "init_cap": 10000.0}
+        return {"start_date": "2025-01-01", "init_cap": 100000.0}
 
 def save_settings(settings_dict):
     try:
@@ -163,9 +167,6 @@ def auto_sync_engine(df, start_date, init_cap):
         price = row['Price']
         mode = row['Mode']
         
-        current_holdings_val = sum(s['shares'] * price for s in slots)
-        current_total_equity = real_cash + current_holdings_val
-
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -184,13 +185,14 @@ def auto_sync_engine(df, start_date, init_cap):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
                 
-                equity_at_sell = real_cash + sum(x['shares'] * price for x in slots)
+                remaining_shares_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
+                equity_at_sell = real_cash + rev + remaining_shares_val
                 
                 journal_entry = {
                     "날짜": date.date(),
-                    "원금": equity_at_sell,
+                    "총자산": equity_at_sell,
                     "수익금": prof,
-                    "수익률": (prof / equity_at_sell) * 100 if equity_at_sell > 0 else 0
+                    "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
                 }
                 journal.append(journal_entry)
                 
@@ -320,7 +322,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v3.3")
+    st.title("💎 동파법 마스터 v4.2")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -340,8 +342,8 @@ def main():
     with tab_trade:
         with st.sidebar:
             st.header("🤖 자동 동기화 설정")
-            default_date = datetime.strptime(settings.get("start_date", "2026-01-23"), "%Y-%m-%d").date()
-            default_cap = float(settings.get("init_cap", 10000.0))
+            default_date = datetime.strptime(settings.get("start_date", "2025-01-01"), "%Y-%m-%d").date()
+            default_cap = float(settings.get("init_cap", 100000.0))
             
             auto_start_date = st.date_input("전략 시작일", value=default_date)
             auto_init_cap = st.number_input("시작 원금 ($)", value=default_cap, step=100.0)
@@ -363,7 +365,7 @@ def main():
             if st.button("🗑️ 모든 데이터 초기화"):
                 empty_df = pd.DataFrame(columns=["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
                 save_csv(empty_df, HOLDINGS_FILE)
-                empty_j = pd.DataFrame(columns=["날짜", "원금", "수익금", "수익률"])
+                empty_j = pd.DataFrame(columns=["날짜", "총자산", "수익금", "수익률"])
                 save_csv(empty_j, JOURNAL_FILE)
                 st.rerun()
 
@@ -449,50 +451,68 @@ def main():
         
         st.markdown("---")
         
-        # 3. 매매일지
+        # 3. 매매일지 (UI 업그레이드: 접기 기능 추가)
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
-        df_j = load_csv(JOURNAL_FILE, ["날짜", "원금", "수익금", "수익률"])
+        df_j = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
+        
+        init_prin = auto_init_cap
         
         if not df_j.empty:
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
+            # 최신순 정렬
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             
-            init_prin = auto_init_cap
             total_prof_j = df_j['수익금'].sum()
             total_yield_j = (total_prof_j / init_prin * 100)
             
+            # [요약 정보는 항상 표시]
             mc1, mc2, mc3 = st.columns(3)
             mc1.metric("🏁 시작 원금", f"${init_prin:,.0f}")
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
-            st.caption("👇 GitHub 기록 (최신순)")
-            df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
+            st.markdown("")
             
-            edited_j = st.data_editor(
-                df_display, num_rows="dynamic", use_container_width=True, key="j_editor",
-                column_config={
-                    "수익금": st.column_config.NumberColumn(format="$%.2f"),
-                    "수익률": st.column_config.NumberColumn(label="수익률(%)", format="%.2f %%"),
-                    "원금": st.column_config.NumberColumn(label="당시 총자산($)", format="$%.0f"),
-                }
-            )
-            
-            if st.button("💾 일지 수정 저장 (GitHub)"):
-                if not edited_j.empty:
-                    edited_j['수익률'] = edited_j.apply(lambda row: (row['수익금']/row['원금']*100) if row['원금']>0 else 0, axis=1)
-                save_csv(edited_j, JOURNAL_FILE)
-                st.success("GitHub에 저장되었습니다!")
-                st.rerun()
+            # [NEW] 상세 기록표를 Expander로 숨김
+            with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
+                st.caption("👇 GitHub 기록 (최신순 / 스크롤 가능)")
+                df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
                 
-            df_chart = df_j.sort_values(by="날짜", ascending=True)
-            df_chart['누적수익'] = df_chart['수익금'].cumsum()
-            df_chart['총자산'] = init_prin + df_chart['누적수익']
+                edited_j = st.data_editor(
+                    df_display,
+                    num_rows="dynamic",
+                    use_container_width=True,
+                    height=400, # 스크롤바 생성 (높이 고정)
+                    key="j_editor",
+                    column_config={
+                        "수익금": st.column_config.NumberColumn(format="$%.2f"),
+                        "수익률": st.column_config.NumberColumn(label="수익률(%)", format="%.2f %%"),
+                        "총자산": st.column_config.NumberColumn(label="당시 총자산($)", format="$%.0f"),
+                    }
+                )
+                
+                if st.button("💾 일지 수정 저장 (GitHub)"):
+                    if not edited_j.empty:
+                        save_csv(edited_j, JOURNAL_FILE)
+                        st.success("GitHub에 저장되었습니다!")
+                        st.rerun()
             
-            st.markdown("---")
-            st.line_chart(df_chart.set_index("날짜")['총자산'])
+            # 그래프 (Expander 밖에 위치)
+            st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
+            df_chart = df_j.sort_values(by="날짜", ascending=True).copy()
+            
+            fig, ax = plt.subplots(figsize=(10, 4))
+            ax.plot(df_chart['날짜'], df_chart['총자산'], color='#4CAF50', linewidth=2, marker='o', markersize=3)
+            ax.fill_between(df_chart['날짜'], df_chart['총자산'], init_prin, where=(df_chart['총자산'] >= init_prin), color='#4CAF50', alpha=0.1)
+            ax.fill_between(df_chart['날짜'], df_chart['총자산'], init_prin, where=(df_chart['총자산'] < init_prin), color='red', alpha=0.1)
+            ax.axhline(y=init_prin, color='gray', linestyle='--', alpha=0.5, label='원금')
+            ax.set_title("Total Equity Growth", fontweight='bold')
+            ax.grid(True, linestyle='--', alpha=0.3)
+            ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
+            st.pyplot(fig)
+
         else:
-            st.info("실현된 수익 없음")
+            st.info("실현된 수익 없음. '자동 동기화'를 실행하거나 수동으로 기록을 추가하세요.")
 
         with st.expander("✍️ 수동 기록 추가"):
             with st.form("journal_manual"):
@@ -501,7 +521,7 @@ def main():
                 j_p = jc2.number_input("당시 총자산($)", value=float(auto_init_cap))
                 j_r = jc3.number_input("손익($)")
                 if st.form_submit_button("추가"):
-                    nj = {"날짜": j_d, "원금": j_p, "수익금": j_r, "수익률": (j_r/j_p)*100}
+                    nj = {"날짜": j_d, "총자산": j_p, "수익금": j_r, "수익률": (j_r/(j_p-j_r))*100 if (j_p-j_r)>0 else 0}
                     df_j = pd.concat([df_j, pd.DataFrame([nj])], ignore_index=True)
                     save_csv(df_j, JOURNAL_FILE)
                     st.rerun()
@@ -557,7 +577,6 @@ def main():
                     
                     st.markdown("#### 📅 연도별 성과표")
                     
-                    # [NEW] 가로형 포맷팅 (이미지 스타일)
                     df_yearly_fmt = df_yearly.copy()
                     df_yearly_fmt['수익률'] = df_yearly_fmt['수익률'].apply(lambda x: f"{x*100:.1f}%")
                     df_yearly_fmt['MDD'] = df_yearly_fmt['MDD'].apply(lambda x: f"{x*100:.1f}%")
@@ -566,7 +585,6 @@ def main():
                     st.dataframe(df_yearly_fmt.T, use_container_width=True)
                 else: st.error("데이터 부족")
 
-    # [복원된 전략 상세 내용]
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
