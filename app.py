@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.4", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.5", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -336,7 +336,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.4 (Bug Fix)")
+    st.title("💎 동파법 마스터 v4.5 (Graph Fix)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -351,14 +351,12 @@ def main():
     soxl_price = df['SOXL'].iloc[-1]
     prev_close = df['SOXL'].iloc[-2]
 
-    # [수정된 부분] 데이터 로드 시 컬럼명 호환성 체크
+    # 세션 초기화 & 호환성 패치
     if 'holdings' not in st.session_state:
         st.session_state['holdings'] = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
     
     if 'journal' not in st.session_state:
-        # 일단 파일 로드
         loaded_j = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
-        # 호환성 패치: '원금' 컬럼이 있으면 '총자산'으로 이름 변경
         if '원금' in loaded_j.columns:
             loaded_j.rename(columns={'원금': '총자산'}, inplace=True)
         st.session_state['journal'] = loaded_j
@@ -490,6 +488,7 @@ def main():
         init_prin = auto_init_cap
         
         if not df_j.empty:
+            # 날짜 변환 및 정렬
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             
@@ -504,7 +503,8 @@ def main():
             st.markdown("")
             
             with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
-                st.caption("👇 GitHub 기록 (최신순 / 스크롤 가능)")
+                st.caption("👇 GitHub 기록 (최신순)")
+                # 표시는 최신순
                 df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
                 
                 edited_j = st.data_editor(
@@ -522,8 +522,13 @@ def main():
                         st.success("저장되었습니다!")
                         st.rerun()
             
+            # [수정된 그래프 로직: 일별 최종 자산만 추출하여 평탄화]
             st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
+            
+            # 날짜순 정렬 후, '같은 날짜'가 있으면 그 날의 '마지막' 기록만 남김 (그래프 튀는 현상 방지)
             df_chart = df_j.sort_values(by="날짜", ascending=True).copy()
+            df_chart = df_chart.drop_duplicates(subset=['날짜'], keep='last')
+            
             fig, ax = plt.subplots(figsize=(10, 4))
             ax.plot(df_chart['날짜'], df_chart['총자산'], color='#4CAF50', linewidth=2, marker='o', markersize=3)
             ax.fill_between(df_chart['날짜'], df_chart['총자산'], init_prin, where=(df_chart['총자산'] >= init_prin), color='#4CAF50', alpha=0.1)
@@ -608,26 +613,43 @@ def main():
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
-        ### 1. 전략 개요
+        ### 1. 전략 개요 (Philosophy)
         * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
         * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
+        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
+
+        ---
+
+        ### 2. 시장 모드 판단 (Market Modes)
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
+
+        | 모드 | 조건 (Condition) | 시장 상황 해석 |
+        | :--- | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
+        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
+        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
+        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
+        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
+        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
         
-        ### 2. 시장 모드 판단
-        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)** 분석
-        
-        | 모드 | 조건 (Condition) |
-        | :--- | :--- |
-        | **🛡️ Safe** | `RSI > 65` & `하락` / `40 < RSI < 50` & `하락` / `50선 하향 돌파` |
-        | **⚔️ Offense** | `RSI < 35` & `상승` / `50 < RSI < 60` & `상승` / `50선 상향 돌파` |
-        
-        ### 3. 실전 매매 규칙
-        **Sticky Rule:** 매수 당시의 모드를 매도 시까지 유지
-        
+        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
+
+        ---
+
+        ### 3. 실전 매매 규칙 (Action Rules)
+        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
+
         | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
         | :--- | :--- | :--- |
-        | **매수 타점** | -3.0% 이하 | -5.0% 이하 |
-        | **익절 목표** | +0.5% | +3.0% |
-        | **손절 기한** | 35일 | 7일 |
+        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
+        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
+        | **손절 기한** | **35 거래일** | **7 거래일** |
+
+        ---
+
+        ### 4. 자금 관리 (Money Management)
+        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입.
+        * **10일 리셋:** 2주마다 총 자산 기준으로 슬롯 크기 재산정 (복리 효과).
         """)
 
 if __name__ == "__main__":
