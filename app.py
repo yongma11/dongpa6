@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.6", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.7", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -35,39 +35,60 @@ REPO_KEY = "yongma11/dongpa6"
 
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
-EQUITY_FILE = "equity_history.csv" # [NEW] 일별 자산 기록 파일
+EQUITY_FILE = "equity_history.csv"
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수
+# 2. 데이터 & 엔진 함수 (완전 수정됨)
 # ---------------------------------------------------------
 @st.cache_data(ttl=3600)
 def get_data_final(period='max'):
     try:
+        # [수정] 티커별로 따로 받아서 합치는 방식 (가장 안전함)
         start_date = '2010-01-01'
+        
+        # 1. QQQ 다운로드
         qqq = yf.download("QQQ", start=start_date, progress=False, auto_adjust=False)
+        # 2. SOXL 다운로드
         soxl = yf.download("SOXL", start=start_date, progress=False, auto_adjust=False)
         
-        if qqq.empty or soxl.empty: return None
+        # 데이터가 비었는지 확인
+        if qqq.empty or soxl.empty:
+            st.error("데이터 다운로드 실패 (빈 데이터)")
+            return None
 
-        if isinstance(qqq.columns, pd.MultiIndex): qqq = qqq.xs('Close', level=0, axis=1)
-        else: qqq = qqq['Close']
-        
-        if isinstance(soxl.columns, pd.MultiIndex): soxl = soxl.xs('Close', level=0, axis=1)
-        else: soxl = soxl['Close']
-        
-        if 'QQQ' in qqq.columns: qqq = qqq['QQQ']
-        elif len(qqq.columns) > 0: qqq = qqq.iloc[:, 0]
-            
-        if 'SOXL' in soxl.columns: soxl = soxl['SOXL']
-        elif len(soxl.columns) > 0: soxl = soxl.iloc[:, 0]
+        # [중요] 컬럼 정리 (MultiIndex 문제 해결)
+        # QQQ 종가 추출
+        if isinstance(qqq.columns, pd.MultiIndex): 
+            # ('Close', 'QQQ') 형태일 경우
+            try: qqq_close = qqq.xs('Close', level=0, axis=1)['QQQ']
+            except: qqq_close = qqq['Close']
+        elif 'Close' in qqq.columns:
+            qqq_close = qqq['Close']
+        else:
+            qqq_close = qqq.iloc[:, 0] # 강제 선택
 
-        df = pd.DataFrame({'QQQ': qqq, 'SOXL': soxl})
+        # SOXL 종가 추출
+        if isinstance(soxl.columns, pd.MultiIndex):
+            try: soxl_close = soxl.xs('Close', level=0, axis=1)['SOXL']
+            except: soxl_close = soxl['Close']
+        elif 'Close' in soxl.columns:
+            soxl_close = soxl['Close']
+        else:
+            soxl_close = soxl.iloc[:, 0] # 강제 선택
+
+        # 데이터프레임 합치기
+        df = pd.DataFrame({'QQQ': qqq_close, 'SOXL': soxl_close})
+        
+        # 결측치 제거 및 시간대 정보 제거
         df = df.ffill().bfill().dropna()
         df.index = df.index.tz_localize(None)
+        
         return df
+
     except Exception as e:
-        st.error(f"데이터 로딩 중 문제 발생: {e}")
+        # 에러 내용을 화면에 출력해서 원인 파악
+        st.error(f"상세 에러 내용: {e}")
         return None
 
 def calc_mode_series(df_qqq):
@@ -174,7 +195,7 @@ def auto_sync_engine(df, start_date, init_cap):
     cum_loss = 0.0
     slots = []
     journal = []
-    daily_equity = [] # [NEW] 일별 자산 기록
+    daily_equity = []
     
     cycle_days = 0
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
@@ -242,8 +263,7 @@ def auto_sync_engine(df, start_date, init_cap):
                         'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
                     })
         
-        # 3. [NEW] 일별 자산 마감 (Mark-to-Market)
-        # 매매가 있든 없든 매일 기록
+        # 3. 일별 자산 마감
         total_holdings_value = sum(s['shares'] * price for s in slots)
         daily_total_equity = real_cash + total_holdings_value
         daily_equity.append({"날짜": date.date(), "총자산": daily_total_equity})
@@ -345,13 +365,15 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.6 (Smooth Graph)")
+    st.title("💎 동파법 마스터 v4.7 (Safe Mode)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
+    # 데이터 로드
     df = get_data_final()
+    
+    # [수정] 데이터 로드 실패 시 UI 중단
     if df is None:
-        st.error("📉 주식 데이터 로드 실패. 잠시 후 다시 시도해주세요.")
         return
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
@@ -391,7 +413,7 @@ def main():
                     if h_new is not None:
                         save_csv(h_new, HOLDINGS_FILE)
                         save_csv(j_new, JOURNAL_FILE)
-                        save_csv(eq_new, EQUITY_FILE) # 자산 파일 저장
+                        save_csv(eq_new, EQUITY_FILE)
                         
                         st.session_state['holdings'] = h_new
                         st.session_state['journal'] = j_new
@@ -501,9 +523,7 @@ def main():
         # 3. 매매일지
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
-        # [NEW] 그래프용 데이터 (일별 자산)
         df_eq = st.session_state['equity_history']
-        
         init_prin = auto_init_cap
         
         if not df_j.empty:
@@ -539,7 +559,6 @@ def main():
                         st.success("저장되었습니다!")
                         st.rerun()
             
-            # [수정된 그래프: 일별 자산 파일 사용]
             st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
             
             if not df_eq.empty:
@@ -588,6 +607,7 @@ def main():
                     ret = (final/bt_init_cap) - 1
                     days = (res.index[-1] - res.index[0]).days
                     cagr = (1+ret)**(365/days) - 1 if days > 0 else 0
+                    
                     res['Peak'] = res['Equity'].cummax()
                     res['Drawdown'] = (res['Equity'] - res['Peak']) / res['Peak']
                     mdd = res['Drawdown'].min()
@@ -631,7 +651,45 @@ def main():
 
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""...""")
+        st.markdown("""
+        ### 1. 전략 개요 (Philosophy)
+        * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
+        * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
+        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
+
+        ---
+
+        ### 2. 시장 모드 판단 (Market Modes)
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
+
+        | 모드 | 조건 (Condition) | 시장 상황 해석 |
+        | :--- | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
+        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
+        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
+        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
+        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
+        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
+        
+        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
+
+        ---
+
+        ### 3. 실전 매매 규칙 (Action Rules)
+        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
+
+        | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
+        | :--- | :--- | :--- |
+        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
+        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
+        | **손절 기한** | **35 거래일** | **7 거래일** |
+
+        ---
+
+        ### 4. 자금 관리 (Money Management)
+        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입.
+        * **10일 리셋:** 2주마다 총 자산 기준으로 슬롯 크기 재산정 (복리 효과).
+        """)
 
 if __name__ == "__main__":
     main()
