@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.0", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.1", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -71,6 +71,7 @@ def calc_mode_series(df_qqq):
     delta = qqq_weekly.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
+    # Wilder's Smoothing (Window 14) - 표준 RSI 공식
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down
@@ -188,16 +189,20 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
+        # 매도 로직 (LOC 기준: 종가가 목표가 이상일 때 체결)
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
             s['days'] += 1
             rule = local_params.get(s['birth_mode'], local_params['Safe'])
+            # [LOC Logic] price는 종가이므로, 종가가 목표가 이상이면 체결됨 (올바름)
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
+                
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
+                
                 journal.append({
                     "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
@@ -208,6 +213,7 @@ def auto_sync_engine(df, start_date, init_cap):
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
+        # 매수 로직 (LOC 기준)
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -271,11 +277,13 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
         action_today = "관망"
+        
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
             s['days'] += 1
             rule = local_params.get(s['birth_mode'], local_params['Safe'])
+            # LOC Sell Simulation: Checking against Close Price
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
@@ -289,6 +297,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                 sold_idx.append(i)
                 action_today = "매도 (익절/손절)"
         for i in sold_idx: del slots[i]
+        
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -299,6 +308,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                     real_cash -= amt
                     slots.append({'buy_price': price, 'shares': shares, 'days': 0, 'birth_mode': mode})
                     action_today = "매수 (LOC)"
+        
         current_equity = real_cash + sum(s['shares']*price for s in slots)
         equity_curve.append({'Date': date, 'Equity': current_equity})
         debug_logs.append({"날짜": date.date(), "RSI (주봉)": f"{rsi_val:.2f}", "적용 모드": mode, "SOXL 종가": f"${price:.2f}", "매매 행동": action_today, "총 자산": f"${current_equity:,.0f}"})
@@ -306,24 +316,15 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     res_df = pd.DataFrame(equity_curve).set_index('Date')
     df_debug = pd.DataFrame(debug_logs).set_index("날짜")
     
-    # 성과 지표 계산
     if not res_df.empty:
-        # 일별 수익률
         res_df['Returns'] = res_df['Equity'].pct_change()
-        # 하방 변동성 (Sortino 분모)
         downside_returns = res_df.loc[res_df['Returns'] < 0, 'Returns']
-        downside_std = downside_returns.std() * np.sqrt(252) # 연율화
-        
+        downside_std = downside_returns.std() * np.sqrt(252)
         total_ret = (res_df['Equity'].iloc[-1] / init_cap) - 1
         days = (res_df.index[-1] - res_df.index[0]).days
         cagr = (1 + total_ret) ** (365 / days) - 1 if days > 0 else 0
-        
         sortino = cagr / downside_std if downside_std > 0 else 0
-        
-        metrics = {
-            'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
-            'sortino': sortino
-        }
+        metrics = {'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9, 'sortino': sortino}
     else:
         metrics = {'profit_factor': 0, 'sortino': 0}
 
@@ -347,7 +348,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.0 (Final)")
+    st.title("💎 동파법 마스터 v5.1 (LOC Edition)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -361,9 +362,7 @@ def main():
     prev_close = df['SOXL'].iloc[-2]
 
     settings = load_settings()
-    
-    if 'auto_run_done' not in st.session_state:
-        st.session_state['auto_run_done'] = False
+    if 'auto_run_done' not in st.session_state: st.session_state['auto_run_done'] = False
 
     try:
         saved_start_date = datetime.strptime(settings.get("start_date", "2025-01-01"), "%Y-%m-%d").date()
@@ -422,41 +421,37 @@ def main():
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # 1. 통합 주문표 (NEW: 하나로 합침)
+        # 1. 통합 주문표 (LOC 로직 반영)
         order_date_str = today.strftime("%Y-%m-%d")
         st.subheader(f"📋 오늘의 통합 주문표 (Order Plan - {order_date_str})")
         
         df_h = st.session_state['holdings']
         orders = []
         
-        # 1) 매도 주문 (MOC & 지정가)
         if not df_h.empty:
             df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
             for idx, row in df_h.iterrows():
-                # MOC 매도 (기한 만료)
+                # 손절기한 만료 -> MOC 매도
                 if row['손절기한'] <= today:
                     orders.append({
                         "구분": "🔴 매도 (Sell)", "티어": f"티어 {idx+1}", 
                         "수량": f"{row['수량']}주", "가격": "Market", "주문유형": "MOC (기한만료)"
                     })
-                # 지정가 매도 (익절 대기)
+                # 익절 대기 -> LOC 매도
                 else:
                     orders.append({
                         "구분": "🔵 매도 (Sell)", "티어": f"티어 {idx+1}", 
-                        "수량": f"{row['수량']}주", "가격": f"${row['목표가']:.2f}", "주문유형": "지정가 (Limit)"
+                        "수량": f"{row['수량']}주", "가격": f"${row['목표가']:.2f}", "주문유형": "LOC (익절)"
                     })
         
-        # 2) 매수 주문 (LOC)
         if soxl_price > 0:
             b_lim = prev_close * (1 + r['buy']/100)
             b_qty = int(slot_sz / soxl_price)
-            # 보유 현금 체크 등은 복잡하므로 단순 계산 표시
             orders.append({
                 "구분": "🟢 매수 (Buy)", "티어": "신규", 
                 "수량": f"{b_qty}주 (예상)", "가격": f"${b_lim:.2f}", "주문유형": "LOC (지정가)"
             })
             
-        # 주문표 출력
         if orders:
             df_orders = pd.DataFrame(orders)
             st.dataframe(
@@ -483,6 +478,8 @@ def main():
             current_yields = ((soxl_price - df_h['매수가']) / df_h['매수가'] * 100)
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
+            
+            # 상태 표시 업데이트 (LOC 대기)
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
@@ -605,7 +602,6 @@ def main():
                     mdd = res['Drawdown'].min()
                     calmar = cagr / abs(mdd) if mdd != 0 else 0
                     
-                    # [NEW] 소르티노 지수 표시
                     m1, m2, m3, m4, m5, m6 = st.columns(6)
                     m1.metric("최종 수익금", f"${final:,.0f}", f"{ret*100:,.1f}%")
                     m2.metric("CAGR", f"{cagr*100:.2f}%")
@@ -647,7 +643,6 @@ def main():
                     
                 else: st.error("데이터 부족")
 
-    # [NEW] 전략 상세 설명 복원
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
@@ -682,6 +677,11 @@ def main():
         | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
         | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
         | **손절 기한** | **35 거래일** | **7 거래일** |
+        
+        #### 🛒 주문 방식 (Order Types)
+        * **매수:** **LOC (Limit On Close)** - 장 마감 종가가 타점 이하일 때만 체결.
+        * **익절 매도:** **LOC (Limit On Close)** - 장 마감 종가가 목표가 이상일 때만 체결 (장중 휩소 방지).
+        * **기간 만료 매도:** **MOC (Market On Close)** - 손절 기한 도래 시 장 마감 시장가로 무조건 청산.
 
         ---
 
