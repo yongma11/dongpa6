@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.8", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v4.9", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -71,6 +71,7 @@ def calc_mode_series(df_qqq):
     delta = qqq_weekly.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
+    # Wilder's Smoothing (Window 14)
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down
@@ -87,6 +88,7 @@ def calc_mode_series(df_qqq):
         if np.isnan(rsi_t1) or np.isnan(rsi_t2):
             modes.append(current_mode)
             continue
+        # 동파법 로직
         safe = ((rsi_t2 > 65) and (rsi_t2 > rsi_t1)) or ((40 < rsi_t2 < 50) and (rsi_t2 > rsi_t1)) or ((rsi_t1 < 50) and (rsi_t2 > 50))
         offense = ((rsi_t2 < 35) and (rsi_t2 < rsi_t1)) or ((50 < rsi_t2 < 60) and (rsi_t2 < rsi_t1)) or ((rsi_t1 > 50) and (rsi_t2 < 50))
         if safe: current_mode = 'Safe'
@@ -94,7 +96,6 @@ def calc_mode_series(df_qqq):
         modes.append(current_mode)
     
     weekly_mode = pd.Series(modes, index=qqq_weekly.index)
-    # [수정] RSI값도 일별 데이터로 확장해서 리턴 (디버깅용)
     return weekly_mode.resample('D').ffill(), rsi_series.resample('D').ffill()
 
 def get_repo():
@@ -159,6 +160,7 @@ def auto_sync_engine(df, start_date, init_cap):
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
     sim_df.columns = ['Price', 'Mode']
     end_date = datetime.now() - timedelta(days=1)
+    # [중요] 사용자가 설정한 날짜부터 어제까지 시뮬레이션
     mask = (sim_df.index >= pd.to_datetime(start_date)) & (sim_df.index <= pd.to_datetime(end_date))
     sim_df = sim_df[mask]
     if sim_df.empty: return None, None, None
@@ -189,6 +191,7 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
+        # 매도
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -197,24 +200,19 @@ def auto_sync_engine(df, start_date, init_cap):
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
-                
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
-                
-                journal_entry = {
-                    "날짜": date.date(),
-                    "총자산": equity_at_sell,
-                    "수익금": prof,
+                journal.append({
+                    "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
-                }
-                journal.append(journal_entry)
-                
+                })
                 real_cash += rev
                 if prof > 0: cum_profit += prof
                 else: cum_loss += abs(prof)
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
+        # 매수
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -227,15 +225,11 @@ def auto_sync_engine(df, start_date, init_cap):
                     tg = price * (1 + tr['sell']/100)
                     cd = date + timedelta(days=tr['time']*1.45)
                     slots.append({
-                        '매수일': date.date(),
-                        '모드': mode,
-                        '매수가': price,
-                        '수량': int(shares),
-                        '목표가': tg,
-                        '손절기한': cd.date(),
-                        'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
+                        '매수일': date.date(), '모드': mode, '매수가': price, '수량': int(shares),
+                        '목표가': tg, '손절기한': cd.date(), 'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
                     })
         
+        # 데일리 자산 기록
         total_holdings_value = sum(s['shares'] * price for s in slots)
         daily_total_equity = real_cash + total_holdings_value
         daily_equity.append({"날짜": date.date(), "총자산": daily_total_equity})
@@ -250,13 +244,9 @@ def auto_sync_engine(df, start_date, init_cap):
     return pd.DataFrame(final_holdings), pd.DataFrame(journal), pd.DataFrame(daily_equity)
 
 def run_backtest_fixed(df, start_date, end_date, init_cap):
-    # [수정] RSI 시리즈도 함께 받음
     mode_daily, rsi_daily = calc_mode_series(df['QQQ'])
-    
-    # 데이터 병합 (SOXL 가격 + 모드 + RSI)
     sim_df = pd.concat([df['SOXL'], mode_daily, rsi_daily], axis=1).dropna()
     sim_df.columns = ['Price', 'Mode', 'RSI']
-    
     mask = (sim_df.index >= pd.to_datetime(start_date)) & (sim_df.index <= pd.to_datetime(end_date))
     sim_df = sim_df[mask]
     if sim_df.empty: return None, None, None, None
@@ -268,19 +258,16 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     cum_loss = 0.0
     slots = []
     equity_curve = []
-    debug_logs = [] # [NEW] 상세 로그 저장용
-    
+    debug_logs = []
     cycle_days = 0
     gross_profit = 0.0
     gross_loss = 0.0
-    
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
     
     for date, row in sim_df.iterrows():
         price = row['Price']
         mode = row['Mode']
         rsi_val = row['RSI']
-        
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -289,10 +276,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
             cycle_days = 0
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
-            
-        # Action 기록용 변수
         action_today = "관망"
-        
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -310,9 +294,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                     gross_loss += abs(prof)
                 sold_idx.append(i)
                 action_today = "매도 (익절/손절)"
-                
         for i in sold_idx: del slots[i]
-        
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -323,35 +305,19 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                     real_cash -= amt
                     slots.append({'buy_price': price, 'shares': shares, 'days': 0, 'birth_mode': mode})
                     action_today = "매수 (LOC)"
-        
         current_equity = real_cash + sum(s['shares']*price for s in slots)
         equity_curve.append({'Date': date, 'Equity': current_equity})
-        
-        # [NEW] 상세 로그 기록
-        debug_logs.append({
-            "날짜": date.date(),
-            "RSI (주봉)": f"{rsi_val:.2f}",
-            "적용 모드": mode,
-            "SOXL 종가": f"${price:.2f}",
-            "매매 행동": action_today,
-            "총 자산": f"${current_equity:,.0f}"
-        })
+        debug_logs.append({"날짜": date.date(), "RSI (주봉)": f"{rsi_val:.2f}", "적용 모드": mode, "SOXL 종가": f"${price:.2f}", "매매 행동": action_today, "총 자산": f"${current_equity:,.0f}"})
     
     res_df = pd.DataFrame(equity_curve).set_index('Date')
-    df_debug = pd.DataFrame(debug_logs).set_index("날짜") # [NEW] 디버그 DF 생성
-    
-    metrics = {
-        'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
-    }
-    
+    df_debug = pd.DataFrame(debug_logs).set_index("날짜")
+    metrics = {'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9}
     yearly_stats = []
     years = res_df.index.year.unique()
-    
     def calc_mdd(series):
         peak = series.cummax()
         dd = (series - peak) / peak
         return dd.min()
-
     prev_equity = init_cap
     for yr in years:
         df_yr = res_df[res_df.index.year == yr]
@@ -360,21 +326,18 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         yr_mdd = calc_mdd(df_yr['Equity'])
         yearly_stats.append({"연도": yr, "수익률": yr_return, "MDD": yr_mdd, "기말자산": end_equity})
         prev_equity = end_equity
-
-    df_yearly = pd.DataFrame(yearly_stats).set_index("연도")
-    return res_df, metrics, df_yearly, df_debug
+    return res_df, metrics, pd.DataFrame(yearly_stats).set_index("연도"), df_debug
 
 # ---------------------------------------------------------
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.8 (Debug)")
+    st.title("💎 동파법 마스터 v4.9 (Auto-Update)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
     df = get_data_final()
-    if df is None:
-        return
+    if df is None: return
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
     curr_mode = mode_s.iloc[-1]
@@ -382,43 +345,52 @@ def main():
     soxl_price = df['SOXL'].iloc[-1]
     prev_close = df['SOXL'].iloc[-2]
 
-    if 'holdings' not in st.session_state:
-        st.session_state['holdings'] = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
-    if 'journal' not in st.session_state:
-        loaded_j = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
-        if '원금' in loaded_j.columns: loaded_j.rename(columns={'원금': '총자산'}, inplace=True)
-        st.session_state['journal'] = loaded_j
-    if 'equity_history' not in st.session_state:
-        st.session_state['equity_history'] = load_csv(EQUITY_FILE, ["날짜", "총자산"])
-    
     settings = load_settings()
+    
+    # [NEW] 자동 최신화 로직
+    # 앱이 켜질 때마다 설정된 날짜부터 오늘까지 자동으로 계산해서 session_state에 올림
+    if 'auto_run_done' not in st.session_state:
+        st.session_state['auto_run_done'] = False
 
+    # 설정된 시작일 읽기
+    try:
+        saved_start_date = datetime.strptime(settings.get("start_date", "2025-01-01"), "%Y-%m-%d").date()
+        saved_init_cap = float(settings.get("init_cap", 100000.0))
+    except:
+        saved_start_date = datetime(2025, 1, 1).date()
+        saved_init_cap = 100000.0
+
+    # 데이터 로드 또는 자동 실행
+    if 'holdings' not in st.session_state or not st.session_state['auto_run_done']:
+        # 자동으로 최신화 실행 (버튼 안 눌러도 됨)
+        h_auto, j_auto, eq_auto = auto_sync_engine(df, saved_start_date, saved_init_cap)
+        
+        if h_auto is not None:
+            # 기존 파일과 비교해서 변경사항이 있을 때만 저장 (속도 최적화)
+            old_h = load_csv(HOLDINGS_FILE, h_auto.columns)
+            if len(h_auto) != len(old_h) or (not old_h.empty and str(h_auto.iloc[-1].values) != str(old_h.iloc[-1].values)):
+                save_csv(h_auto, HOLDINGS_FILE)
+                save_csv(j_auto, JOURNAL_FILE)
+                save_csv(eq_auto, EQUITY_FILE)
+            
+            st.session_state['holdings'] = h_auto
+            st.session_state['journal'] = j_auto
+            st.session_state['equity_history'] = eq_auto
+            st.session_state['auto_run_done'] = True
+    
     with tab_trade:
         with st.sidebar:
-            st.header("🤖 자동 동기화 설정")
-            default_date = datetime.strptime(settings.get("start_date", "2025-01-01"), "%Y-%m-%d").date()
-            default_cap = float(settings.get("init_cap", 100000.0))
+            st.header("🤖 설정 및 초기화")
+            # 이미 저장된 설정값을 기본값으로 보여줌
+            auto_start_date = st.date_input("전략 시작일", value=saved_start_date)
+            auto_init_cap = st.number_input("시작 원금 ($)", value=saved_init_cap, step=100.0)
             
-            auto_start_date = st.date_input("전략 시작일", value=default_date)
-            auto_init_cap = st.number_input("시작 원금 ($)", value=default_cap, step=100.0)
-            
-            if st.button("🔄 전략대로 자동 동기화 (Sync)", type="primary"):
+            # 이 버튼은 이제 '설정 변경' 용도로 쓰임
+            if st.button("🔄 설정 변경 및 재동기화", type="primary"):
                 new_settings = {"start_date": auto_start_date.strftime("%Y-%m-%d"), "init_cap": auto_init_cap}
                 save_settings(new_settings)
-                
-                with st.spinner("과거 데이터 시뮬레이션 및 클라우드 동기화 중..."):
-                    h_new, j_new, eq_new = auto_sync_engine(df, auto_start_date, auto_init_cap)
-                    
-                    if h_new is not None:
-                        save_csv(h_new, HOLDINGS_FILE)
-                        save_csv(j_new, JOURNAL_FILE)
-                        save_csv(eq_new, EQUITY_FILE)
-                        st.session_state['holdings'] = h_new
-                        st.session_state['journal'] = j_new
-                        st.session_state['equity_history'] = eq_new
-                        st.success("완료! 데이터가 저장되었습니다.")
-                        st.rerun()
-                    else: st.error("동기화 실패")
+                st.session_state['auto_run_done'] = False # 다시 실행 유도
+                st.rerun()
             
             st.markdown("---")
             if st.button("🗑️ 데이터 초기화"):
@@ -434,21 +406,24 @@ def main():
                 st.rerun()
 
             today = datetime.now().date()
-            cycle = ((today - auto_start_date).days % RESET_CYCLE) + 1
+            cycle = ((today - saved_start_date).days % RESET_CYCLE) + 1
             st.info(f"🔄 사이클: **{cycle}일차** / 10일")
 
         r = PARAMS[curr_mode]
-        slot_sz = auto_init_cap / MAX_SLOTS
+        slot_sz = saved_init_cap / MAX_SLOTS
         
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.1f}", delta_color="inverse")
+        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.2f}", delta_color="inverse")
         c2.metric("SOXL 현재가", f"${soxl_price:.2f}", f"{((soxl_price-prev_close)/prev_close)*100:.2f}%")
         c3.metric("1슬롯 할당금", f"${slot_sz:,.0f}")
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
         # 1. 통합 주문표
-        st.subheader("⚖️ 오늘의 통합 주문표")
+        # [NEW] 오늘 날짜 표시
+        order_date_str = today.strftime("%Y-%m-%d")
+        st.subheader(f"⚖️ 오늘의 통합 주문표 ({order_date_str} 기준)")
+        
         df_h = st.session_state['holdings']
         
         if soxl_price > 0:
@@ -521,7 +496,7 @@ def main():
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
         df_eq = st.session_state['equity_history']
-        init_prin = auto_init_cap
+        init_prin = saved_init_cap
         
         if not df_j.empty:
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
@@ -577,7 +552,7 @@ def main():
             with st.form("journal_manual"):
                 jc1, jc2, jc3 = st.columns(3)
                 j_d = jc1.date_input("정산일", value=today)
-                j_p = jc2.number_input("당시 총자산($)", value=float(auto_init_cap))
+                j_p = jc2.number_input("당시 총자산($)", value=float(saved_init_cap))
                 j_r = jc3.number_input("손익($)")
                 if st.form_submit_button("추가"):
                     nj = {"날짜": j_d, "총자산": j_p, "수익금": j_r, "수익률": (j_r/(j_p-j_r))*100 if (j_p-j_r)>0 else 0}
@@ -641,7 +616,6 @@ def main():
                     df_yearly_fmt['기말자산'] = df_yearly_fmt['기말자산'].apply(lambda x: f"${x:,.0f}")
                     st.dataframe(df_yearly_fmt.T, use_container_width=True)
                     
-                    # [NEW] 상세 디버그 로그 표시
                     st.markdown("#### 🔍 상세 매매 및 지표 로그 (Debug Log)")
                     st.dataframe(df_debug.sort_index(ascending=False), use_container_width=True)
                     
