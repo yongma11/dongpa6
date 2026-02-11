@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v4.9", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.0", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -71,7 +71,6 @@ def calc_mode_series(df_qqq):
     delta = qqq_weekly.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
-    # Wilder's Smoothing (Window 14)
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down
@@ -88,7 +87,6 @@ def calc_mode_series(df_qqq):
         if np.isnan(rsi_t1) or np.isnan(rsi_t2):
             modes.append(current_mode)
             continue
-        # 동파법 로직
         safe = ((rsi_t2 > 65) and (rsi_t2 > rsi_t1)) or ((40 < rsi_t2 < 50) and (rsi_t2 > rsi_t1)) or ((rsi_t1 < 50) and (rsi_t2 > 50))
         offense = ((rsi_t2 < 35) and (rsi_t2 < rsi_t1)) or ((50 < rsi_t2 < 60) and (rsi_t2 < rsi_t1)) or ((rsi_t1 > 50) and (rsi_t2 < 50))
         if safe: current_mode = 'Safe'
@@ -160,7 +158,6 @@ def auto_sync_engine(df, start_date, init_cap):
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
     sim_df.columns = ['Price', 'Mode']
     end_date = datetime.now() - timedelta(days=1)
-    # [중요] 사용자가 설정한 날짜부터 어제까지 시뮬레이션
     mask = (sim_df.index >= pd.to_datetime(start_date)) & (sim_df.index <= pd.to_datetime(end_date))
     sim_df = sim_df[mask]
     if sim_df.empty: return None, None, None
@@ -191,7 +188,6 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
-        # 매도
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -212,7 +208,6 @@ def auto_sync_engine(df, start_date, init_cap):
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
-        # 매수
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -229,7 +224,6 @@ def auto_sync_engine(df, start_date, init_cap):
                         '목표가': tg, '손절기한': cd.date(), 'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
                     })
         
-        # 데일리 자산 기록
         total_holdings_value = sum(s['shares'] * price for s in slots)
         daily_total_equity = real_cash + total_holdings_value
         daily_equity.append({"날짜": date.date(), "총자산": daily_total_equity})
@@ -311,7 +305,28 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     
     res_df = pd.DataFrame(equity_curve).set_index('Date')
     df_debug = pd.DataFrame(debug_logs).set_index("날짜")
-    metrics = {'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9}
+    
+    # 성과 지표 계산
+    if not res_df.empty:
+        # 일별 수익률
+        res_df['Returns'] = res_df['Equity'].pct_change()
+        # 하방 변동성 (Sortino 분모)
+        downside_returns = res_df.loc[res_df['Returns'] < 0, 'Returns']
+        downside_std = downside_returns.std() * np.sqrt(252) # 연율화
+        
+        total_ret = (res_df['Equity'].iloc[-1] / init_cap) - 1
+        days = (res_df.index[-1] - res_df.index[0]).days
+        cagr = (1 + total_ret) ** (365 / days) - 1 if days > 0 else 0
+        
+        sortino = cagr / downside_std if downside_std > 0 else 0
+        
+        metrics = {
+            'profit_factor': gross_profit / gross_loss if gross_loss > 0 else 99.9,
+            'sortino': sortino
+        }
+    else:
+        metrics = {'profit_factor': 0, 'sortino': 0}
+
     yearly_stats = []
     years = res_df.index.year.unique()
     def calc_mdd(series):
@@ -332,7 +347,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v4.9 (Auto-Update)")
+    st.title("💎 동파법 마스터 v5.0 (Final)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -347,12 +362,9 @@ def main():
 
     settings = load_settings()
     
-    # [NEW] 자동 최신화 로직
-    # 앱이 켜질 때마다 설정된 날짜부터 오늘까지 자동으로 계산해서 session_state에 올림
     if 'auto_run_done' not in st.session_state:
         st.session_state['auto_run_done'] = False
 
-    # 설정된 시작일 읽기
     try:
         saved_start_date = datetime.strptime(settings.get("start_date", "2025-01-01"), "%Y-%m-%d").date()
         saved_init_cap = float(settings.get("init_cap", 100000.0))
@@ -360,19 +372,14 @@ def main():
         saved_start_date = datetime(2025, 1, 1).date()
         saved_init_cap = 100000.0
 
-    # 데이터 로드 또는 자동 실행
     if 'holdings' not in st.session_state or not st.session_state['auto_run_done']:
-        # 자동으로 최신화 실행 (버튼 안 눌러도 됨)
         h_auto, j_auto, eq_auto = auto_sync_engine(df, saved_start_date, saved_init_cap)
-        
         if h_auto is not None:
-            # 기존 파일과 비교해서 변경사항이 있을 때만 저장 (속도 최적화)
             old_h = load_csv(HOLDINGS_FILE, h_auto.columns)
             if len(h_auto) != len(old_h) or (not old_h.empty and str(h_auto.iloc[-1].values) != str(old_h.iloc[-1].values)):
                 save_csv(h_auto, HOLDINGS_FILE)
                 save_csv(j_auto, JOURNAL_FILE)
                 save_csv(eq_auto, EQUITY_FILE)
-            
             st.session_state['holdings'] = h_auto
             st.session_state['journal'] = j_auto
             st.session_state['equity_history'] = eq_auto
@@ -381,17 +388,13 @@ def main():
     with tab_trade:
         with st.sidebar:
             st.header("🤖 설정 및 초기화")
-            # 이미 저장된 설정값을 기본값으로 보여줌
             auto_start_date = st.date_input("전략 시작일", value=saved_start_date)
             auto_init_cap = st.number_input("시작 원금 ($)", value=saved_init_cap, step=100.0)
-            
-            # 이 버튼은 이제 '설정 변경' 용도로 쓰임
             if st.button("🔄 설정 변경 및 재동기화", type="primary"):
                 new_settings = {"start_date": auto_start_date.strftime("%Y-%m-%d"), "init_cap": auto_init_cap}
                 save_settings(new_settings)
-                st.session_state['auto_run_done'] = False # 다시 실행 유도
+                st.session_state['auto_run_done'] = False
                 st.rerun()
-            
             st.markdown("---")
             if st.button("🗑️ 데이터 초기화"):
                 empty_df = pd.DataFrame(columns=["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
@@ -419,34 +422,55 @@ def main():
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # 1. 통합 주문표
-        # [NEW] 오늘 날짜 표시
+        # 1. 통합 주문표 (NEW: 하나로 합침)
         order_date_str = today.strftime("%Y-%m-%d")
-        st.subheader(f"⚖️ 오늘의 통합 주문표 ({order_date_str} 기준)")
+        st.subheader(f"📋 오늘의 통합 주문표 (Order Plan - {order_date_str})")
         
         df_h = st.session_state['holdings']
+        orders = []
         
-        if soxl_price > 0:
-            b_lim = prev_close * (1 + r['buy']/100)
-            b_qty = int(slot_sz / soxl_price)
-        else: b_lim, b_qty = 0, 0
-        
-        moc_sell = 0
-        loc_list = []
+        # 1) 매도 주문 (MOC & 지정가)
         if not df_h.empty:
             df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
             for idx, row in df_h.iterrows():
-                if row['손절기한'] <= today: moc_sell += row['수량']
-                else: loc_list.append(f"티어{idx+1} ({row['수량']}주 @ ${row['목표가']:.1f})")
-
-        oc1, oc2 = st.columns(2)
-        oc1.info(f"**🛒 매수 (LOC):** **{b_qty} 주** (@ ${b_lim:.2f} 이하)")
-        if moc_sell > 0: oc2.error(f"**🚨 매도 (MOC):** **{moc_sell} 주** (기한 만료)")
-        else: oc2.write("**✅ MOC 매도 없음**")
-        if loc_list:
-            with st.expander(f"🔵 익절 대기 ({len(loc_list)}건)"):
-                for l in loc_list: st.write(f"- {l}")
-        if moc_sell > 0: st.warning(f"**🧮 퉁치기:** 순매수 **{b_qty - moc_sell} 주**")
+                # MOC 매도 (기한 만료)
+                if row['손절기한'] <= today:
+                    orders.append({
+                        "구분": "🔴 매도 (Sell)", "티어": f"티어 {idx+1}", 
+                        "수량": f"{row['수량']}주", "가격": "Market", "주문유형": "MOC (기한만료)"
+                    })
+                # 지정가 매도 (익절 대기)
+                else:
+                    orders.append({
+                        "구분": "🔵 매도 (Sell)", "티어": f"티어 {idx+1}", 
+                        "수량": f"{row['수량']}주", "가격": f"${row['목표가']:.2f}", "주문유형": "지정가 (Limit)"
+                    })
+        
+        # 2) 매수 주문 (LOC)
+        if soxl_price > 0:
+            b_lim = prev_close * (1 + r['buy']/100)
+            b_qty = int(slot_sz / soxl_price)
+            # 보유 현금 체크 등은 복잡하므로 단순 계산 표시
+            orders.append({
+                "구분": "🟢 매수 (Buy)", "티어": "신규", 
+                "수량": f"{b_qty}주 (예상)", "가격": f"${b_lim:.2f}", "주문유형": "LOC (지정가)"
+            })
+            
+        # 주문표 출력
+        if orders:
+            df_orders = pd.DataFrame(orders)
+            st.dataframe(
+                df_orders, 
+                use_container_width=True,
+                column_config={
+                    "구분": st.column_config.TextColumn("구분", width="small"),
+                    "티어": st.column_config.TextColumn("티어", width="small"),
+                    "가격": st.column_config.TextColumn("가격 ($)", width="medium"),
+                    "주문유형": st.column_config.TextColumn("주문 유형", width="medium"),
+                }
+            )
+        else:
+            st.info("오늘 예정된 주문이 없습니다.")
 
         st.markdown("---")
 
@@ -581,12 +605,14 @@ def main():
                     mdd = res['Drawdown'].min()
                     calmar = cagr / abs(mdd) if mdd != 0 else 0
                     
-                    m1, m2, m3, m4, m5 = st.columns(5)
+                    # [NEW] 소르티노 지수 표시
+                    m1, m2, m3, m4, m5, m6 = st.columns(6)
                     m1.metric("최종 수익금", f"${final:,.0f}", f"{ret*100:,.1f}%")
                     m2.metric("CAGR", f"{cagr*100:.2f}%")
                     m3.metric("MDD", f"{mdd*100:.2f}%", delta_color="inverse")
                     m4.metric("Calmar", f"{calmar:.2f}")
-                    m5.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
+                    m5.metric("Sortino", f"{metrics['sortino']:.2f}")
+                    m6.metric("Profit Factor", f"{metrics['profit_factor']:.2f}")
                     
                     st.markdown("#### 📊 통합 성과 차트")
                     plt.style.use('default')
@@ -621,9 +647,48 @@ def main():
                     
                 else: st.error("데이터 부족")
 
+    # [NEW] 전략 상세 설명 복원
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""...""")
+        st.markdown("""
+        ### 1. 전략 개요 (Philosophy)
+        * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
+        * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
+        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
+
+        ---
+
+        ### 2. 시장 모드 판단 (Market Modes)
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
+
+        | 모드 | 조건 (Condition) | 시장 상황 해석 |
+        | :--- | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
+        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
+        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
+        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
+        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
+        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
+        
+        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
+
+        ---
+
+        ### 3. 실전 매매 규칙 (Action Rules)
+        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
+
+        | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
+        | :--- | :--- | :--- |
+        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
+        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
+        | **손절 기한** | **35 거래일** | **7 거래일** |
+
+        ---
+
+        ### 4. 자금 관리 (Money Management)
+        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입하여 리스크를 분산합니다.
+        * **10일 리셋:** 2주(10거래일)마다 총 자산 기준으로 슬롯 크기를 재산정하여 복리 효과를 극대화합니다.
+        """)
 
 if __name__ == "__main__":
     main()
