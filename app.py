@@ -12,9 +12,73 @@ import json
 import time
 
 # ---------------------------------------------------------
-# 1. 페이지 설정 & 스타일
+# 1. 페이지 설정 & 커스텀 CSS (UI 업그레이드)
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.8", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v6.0", page_icon="💎", layout="wide")
+
+# [NEW] 모던 UI를 위한 커스텀 CSS 주입
+st.markdown("""
+<style>
+    /* 1. 폰트 적용 (Pretendard) */
+    @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css");
+    html, body, [class*="css"] {
+        font-family: 'Pretendard', sans-serif;
+    }
+    
+    /* 2. 카드 스타일 (주문표 등) */
+    .st-card {
+        background-color: #ffffff;
+        padding: 20px;
+        border-radius: 12px;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
+        border: 1px solid #e0e0e0;
+        margin-bottom: 15px;
+    }
+    
+    /* 다크모드 대응 */
+    @media (prefers-color-scheme: dark) {
+        .st-card {
+            background-color: #262730;
+            border: 1px solid #41424b;
+        }
+    }
+
+    /* 3. 상태 뱃지 스타일 */
+    .badge-buy {
+        background-color: #e6f4ea;
+        color: #1e8e3e;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 0.9em;
+    }
+    .badge-sell {
+        background-color: #fce8e6;
+        color: #d93025;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 0.9em;
+    }
+    .badge-info {
+        background-color: #e8f0fe;
+        color: #1a73e8;
+        padding: 4px 8px;
+        border-radius: 4px;
+        font-weight: bold;
+        font-size: 0.9em;
+    }
+
+    /* 4. 메트릭 박스 강조 */
+    div[data-testid="stMetric"] {
+        background-color: rgba(255, 255, 255, 0.05);
+        border: 1px solid rgba(128, 128, 128, 0.2);
+        padding: 15px;
+        border-radius: 10px;
+        text-align: center;
+    }
+</style>
+""", unsafe_allow_html=True)
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -41,7 +105,6 @@ SETTINGS_FILE = "settings.json"
 # ---------------------------------------------------------
 @st.cache_data(ttl=300)
 def get_data_final(period='max'):
-    # 재시도 로직 (3회)
     for attempt in range(3):
         try:
             start_date = '2010-01-01'
@@ -67,7 +130,6 @@ def get_data_final(period='max'):
 
         except Exception as e:
             time.sleep(1)
-            
     return None
 
 def calc_mode_series(df_qqq):
@@ -151,10 +213,8 @@ def save_csv(df, filename):
                 repo.create_file(filename, f"Create {filename}", csv_string)
     except Exception as e: st.error(f"GitHub 저장 실패: {e}")
 
-# [수정] 매매 로그(매수/매도) 전체 생성
 def auto_sync_engine(df, start_date, init_cap):
     if df is None: return None, None, None, None
-    
     mode_daily, _ = calc_mode_series(df['QQQ'])
     sim_df = pd.concat([df['SOXL'], mode_daily], axis=1).dropna()
     sim_df.columns = ['Price', 'Mode']
@@ -172,7 +232,7 @@ def auto_sync_engine(df, start_date, init_cap):
     slots = []
     journal = []
     daily_equity = []
-    full_action_log = [] # [NEW] 전체 매매 기록
+    full_action_log = []
     
     cycle_days = 0
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
@@ -180,7 +240,6 @@ def auto_sync_engine(df, start_date, init_cap):
     for date, row in sim_df.iterrows():
         price = row['Price']
         mode = row['Mode']
-        
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -190,7 +249,6 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
-        # 매도
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -201,25 +259,20 @@ def auto_sync_engine(df, start_date, init_cap):
                 prof = rev - (s['shares'] * s['buy_price'])
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
-                
-                # 저널 저장 (수익 실현)
                 journal.append({
                     "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
                 })
-                # 액션 로그 저장
                 full_action_log.append({
                     "날짜": date.date(), "구분": "매도 (Sell)", "가격": f"${price:.2f}", 
                     "수량": s['shares'], "수익금": f"${prof:.2f}", "비고": "익절/기간만료"
                 })
-                
                 real_cash += rev
                 if prof > 0: cum_profit += prof
                 else: cum_loss += abs(prof)
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
-        # 매수
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -235,7 +288,6 @@ def auto_sync_engine(df, start_date, init_cap):
                         '매수일': date.date(), '모드': mode, '매수가': price, '수량': int(shares),
                         '목표가': tg, '손절기한': cd.date(), 'buy_price': price, 'shares': int(shares), 'days': 0, 'birth_mode': mode
                     })
-                    # 액션 로그 저장
                     full_action_log.append({
                         "날짜": date.date(), "구분": "매수 (Buy)", "가격": f"${price:.2f}", 
                         "수량": int(shares), "수익금": "-", "비고": f"{mode} 진입"
@@ -252,7 +304,6 @@ def auto_sync_engine(df, start_date, init_cap):
             "수량": s['수량'], "목표가": s['목표가'], "손절기한": s['손절기한']
         })
     
-    # 역순 정렬 (최신순)
     df_actions = pd.DataFrame(full_action_log)
     if not df_actions.empty:
         df_actions = df_actions.sort_values(by="날짜", ascending=False).reset_index(drop=True)
@@ -361,11 +412,10 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.8 (Full History)")
+    st.title("💎 동파법 마스터 v6.0 (Modern UI)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    # 데이터 로드
     with st.spinner("데이터 연결 중... (3회 재시도)"):
         df = get_data_final()
     
@@ -397,7 +447,6 @@ def main():
         saved_start_date = datetime(2025, 1, 1).date()
         saved_init_cap = 100000.0
 
-    # 자동 동기화 (Action Log 생성)
     if not offline_mode and ('holdings' not in st.session_state or not st.session_state['auto_run_done']):
         h_auto, j_auto, eq_auto, log_auto = auto_sync_engine(df, saved_start_date, saved_init_cap)
         if h_auto is not None:
@@ -409,17 +458,15 @@ def main():
             st.session_state['holdings'] = h_auto
             st.session_state['journal'] = j_auto
             st.session_state['equity_history'] = eq_auto
-            st.session_state['action_log'] = log_auto # [NEW] 로그 저장
+            st.session_state['action_log'] = log_auto
             st.session_state['auto_run_done'] = True
     
-    # 세션 데이터 로드
     if 'holdings' not in st.session_state:
         st.session_state['holdings'] = load_csv(HOLDINGS_FILE, ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"])
     if 'journal' not in st.session_state:
         st.session_state['journal'] = load_csv(JOURNAL_FILE, ["날짜", "총자산", "수익금", "수익률"])
     if 'equity_history' not in st.session_state:
         st.session_state['equity_history'] = load_csv(EQUITY_FILE, ["날짜", "총자산"])
-    # Action Log는 파일로 저장 안 함 (매번 계산) -> 없으면 빈 DF
     if 'action_log' not in st.session_state:
         st.session_state['action_log'] = pd.DataFrame()
 
@@ -459,13 +506,15 @@ def main():
         r = PARAMS[curr_mode]
         slot_sz = saved_init_cap / MAX_SLOTS
         
+        # [UI] 메트릭 섹션
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.2f}" if not offline_mode else "Offline", delta_color="inverse")
+        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.2f}" if not offline_mode else "Offline")
         c2.metric("SOXL 현재가", f"${soxl_price:.2f}" if not offline_mode else "Offline", f"{((soxl_price-prev_close)/prev_close)*100:.2f}%" if not offline_mode and prev_close > 0 else "-")
         c3.metric("1슬롯 할당금", f"${slot_sz:,.0f}")
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
+        # [UI] 통합 주문표 (카드형)
         order_date_str = today.strftime("%Y-%m-%d")
         st.subheader(f"📋 오늘의 주문 (Today's Orders - {order_date_str})")
         
@@ -473,32 +522,50 @@ def main():
             st.warning("오프라인 모드에서는 최신 주문을 생성할 수 없습니다.")
         else:
             df_h = st.session_state['holdings']
-            sell_orders = []
-            buy_orders = []
+            orders_exist = False
             
+            # 매도 카드
             if not df_h.empty:
                 df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
                 for idx, row in df_h.iterrows():
                     if row['손절기한'] <= today:
-                        sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (시장가) - **MOC (기간만료)**")
+                        st.markdown(f"""
+                        <div class="st-card" style="border-left: 5px solid #d93025;">
+                            <span class="badge-sell">매도 (MOC)</span>
+                            <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">티어 {idx+1}</span>
+                            <br><span style="color:#666; margin-top:5px; display:block;">수량: {row['수량']}주 | 가격: 시장가 (기한만료)</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        orders_exist = True
                     else:
-                        sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (${row['목표가']:.2f}) - **LOC (익절)**")
+                        st.markdown(f"""
+                        <div class="st-card" style="border-left: 5px solid #1a73e8;">
+                            <span class="badge-info">매도 (LOC)</span>
+                            <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">티어 {idx+1}</span>
+                            <br><span style="color:#666; margin-top:5px; display:block;">수량: {row['수량']}주 | 목표가: ${row['목표가']:.2f}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        orders_exist = True
             
+            # 매수 카드
             if soxl_price > 0:
                 b_lim = prev_close * (1 + r['buy']/100)
                 b_qty = int(slot_sz / soxl_price)
-                buy_orders.append(f"**[매수]** 신규: **{b_qty}주 (예상)** (${b_lim:.2f}) - **LOC (진입)**")
+                st.markdown(f"""
+                <div class="st-card" style="border-left: 5px solid #1e8e3e;">
+                    <span class="badge-buy">매수 (LOC)</span>
+                    <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">신규 진입</span>
+                    <br><span style="color:#666; margin-top:5px; display:block;">수량: {b_qty}주 (예상) | 타점: ${b_lim:.2f} 이하</span>
+                </div>
+                """, unsafe_allow_html=True)
+                orders_exist = True
                 
-            if not sell_orders and not buy_orders:
+            if not orders_exist:
                 st.info("오늘 예정된 주문이 없습니다. (No Orders)")
-            else:
-                if sell_orders:
-                    for order in sell_orders: st.error(order)
-                if buy_orders:
-                    for order in buy_orders: st.success(order)
 
         st.markdown("---")
 
+        # [UI] 티어 현황 (항상 보임)
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         df_h = st.session_state['holdings']
         if not df_h.empty:
@@ -516,53 +583,52 @@ def main():
                 total_qty = df_h['수량'].sum()
                 total_invested = (df_h['매수가'] * df_h['수량']).sum()
                 avg_price = total_invested / total_qty if total_qty > 0 else 0
-                current_val = total_qty * soxl_price
-                total_profit = current_val - total_invested
+                total_profit = (total_qty * soxl_price) - total_invested
                 total_yield_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
                 
-                st.markdown("#### 📌 전체 계좌 요약")
-                sc1, sc2, sc3, sc4 = st.columns(4)
-                sc1.metric("총 보유수량", f"{total_qty} 주")
-                sc2.metric("통합 평단가", f"${avg_price:,.2f}")
-                sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
-                sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
+                # 요약 지표
+                c1, c2, c3, c4 = st.columns(4)
+                c1.metric("총 보유수량", f"{total_qty} 주")
+                c2.metric("평단가", f"${avg_price:,.2f}")
+                c3.metric("평가손익", f"${total_profit:,.2f}", delta_color="normal")
+                c4.metric("수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            st.markdown("👇 **보유 티어 상세 내역 (편집 가능)**")
+            st.markdown("👇 **보유 티어 상세 (편집 가능)**")
             edited_h = st.data_editor(
                 df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
                 column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
             )
-            if st.button("💾 티어 수정 저장 (GitHub)"):
+            if st.button("💾 티어 수정 저장"):
                 save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
                 save_csv(edited_h[save_cols], HOLDINGS_FILE)
                 st.session_state['holdings'] = edited_h[save_cols]
-                st.success("저장되었습니다!")
+                st.success("저장 완료!")
                 st.rerun()
         else: st.info("현재 보유 중인 티어가 없습니다.")
         
         st.markdown("---")
         
-        st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
+        # [UI] 매매일지 및 히스토리
+        st.subheader("📝 매매 수익 기록장")
         df_j = st.session_state['journal']
         df_eq = st.session_state['equity_history']
-        df_log = st.session_state['action_log'] # [NEW] 전체 매매 로그
+        df_log = st.session_state['action_log']
         init_prin = saved_init_cap
         
-        # 기본 요약 (수익금 등)
         if not df_j.empty:
             total_prof_j = df_j['수익금'].sum()
             total_yield_j = (total_prof_j / init_prin * 100)
-            mc1, mc2, mc3 = st.columns(3)
-            mc1.metric("🏁 시작 원금", f"${init_prin:,.0f}")
-            mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
-            mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
+            c1, c2, c3 = st.columns(3)
+            c1.metric("시작 원금", f"${init_prin:,.0f}")
+            c2.metric("누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
+            c3.metric("총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
         else:
-            st.info("아직 실현된 수익이 없습니다. (No closed trades)")
+            st.info("아직 실현된 수익이 없습니다.")
 
         st.markdown("")
         start_date_display = saved_start_date.strftime("%Y-%m-%d")
         
-        # [NEW] 상세 매매 로그 (매수/매도 전체 포함) - 항상 표시
+        # [UI] 상세 매매 기록 (접이식)
         with st.expander(f"📜 전략 시작일({start_date_display}) 이후 상세 매매 기록 보기", expanded=False):
             if not df_log.empty:
                 st.dataframe(
@@ -574,9 +640,10 @@ def main():
                     }
                 )
             else:
-                st.caption("⚠️ 기록된 매매 내역이 없습니다. (시작일 이후 매매가 발생하지 않음)")
+                st.caption("⚠️ 기록된 매매 내역이 없습니다.")
 
-        st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
+        # [UI] 자산 그래프
+        st.markdown("### 📈 자산 성장 그래프")
         if not df_eq.empty:
             df_eq['날짜'] = pd.to_datetime(df_eq['날짜'])
             df_eq = df_eq.sort_values(by="날짜")
@@ -596,6 +663,7 @@ def main():
         if offline_mode:
             st.warning("오프라인 모드에서는 백테스트를 실행할 수 없습니다.")
         else:
+            # 백테스트 코드는 이전과 동일
             bt_init_cap = st.number_input("백테스트 초기 자본 ($)", value=10000.0, step=1000.0)
             bc1, bc2 = st.columns(2)
             start_d = bc1.date_input("검증 시작일", value=datetime(2010, 1, 1), min_value=datetime(2000, 1, 1))
