@@ -5,16 +5,12 @@ import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
 import os
-import matplotlib.pyplot as plt
-import matplotlib.ticker as mtick
-from github import Github
-from io import StringIO
-import json
+import requests # [패치] 요청 헤더 조작용
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.5", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.6", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -30,42 +26,44 @@ except:
     st.error("🚨 GitHub 토큰 오류: Streamlit Secrets에 GH_TOKEN을 설정해주세요.")
     st.stop()
 
-# 👇 사용자 설정
 REPO_KEY = "yongma11/dongpa6" 
-
 HOLDINGS_FILE = "my_holdings.csv"
 JOURNAL_FILE = "trading_journal.csv"
 EQUITY_FILE = "equity_history.csv"
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수
+# 2. 데이터 & 엔진 함수 (Connection Fix)
 # ---------------------------------------------------------
 @st.cache_data(ttl=300)
 def get_data_final(period='max'):
     try:
         start_date = '2010-01-01'
-        qqq = yf.download("QQQ", start=start_date, progress=False, auto_adjust=False)
-        soxl = yf.download("SOXL", start=start_date, progress=False, auto_adjust=False)
         
-        if qqq.empty or soxl.empty: return None
+        # [패치] 세션 헤더 조작 (봇 차단 우회)
+        session = requests.Session()
+        session.headers.update({
+            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        })
 
-        if isinstance(qqq.columns, pd.MultiIndex): 
-            try: qqq_close = qqq.xs('Close', level=0, axis=1)['QQQ']
-            except: qqq_close = qqq['Close']
-        elif 'Close' in qqq.columns: qqq_close = qqq['Close']
-        else: qqq_close = qqq.iloc[:, 0]
+        def fetch_ticker(symbol):
+            # yf.download 대신 Ticker.history 사용 (더 안정적)
+            ticker = yf.Ticker(symbol, session=session)
+            df = ticker.history(start=start_date, auto_adjust=False)
+            return df['Close']
 
-        if isinstance(soxl.columns, pd.MultiIndex):
-            try: soxl_close = soxl.xs('Close', level=0, axis=1)['SOXL']
-            except: soxl_close = soxl['Close']
-        elif 'Close' in soxl.columns: soxl_close = soxl['Close']
-        else: soxl_close = soxl.iloc[:, 0]
+        qqq_close = fetch_ticker("QQQ")
+        soxl_close = fetch_ticker("SOXL")
+        
+        if qqq_close.empty or soxl_close.empty: return None
 
+        # 데이터 병합
         df = pd.DataFrame({'QQQ': qqq_close, 'SOXL': soxl_close})
         df = df.ffill().bfill().dropna()
         df.index = df.index.tz_localize(None)
+        
         return df
+
     except Exception as e:
         print(f"Data Load Error: {e}")
         return None
@@ -342,14 +340,16 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.5 (History Log)")
+    st.title("💎 동파법 마스터 v5.6 (Connection Fix)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
     with st.spinner("데이터 로딩 중..."):
         df = get_data_final()
+    
     if df is None:
-        st.error("📉 데이터 로드 실패. 잠시 후 F5를 눌러주세요.")
+        st.error("📉 주식 데이터 연결 실패 (Yahoo Finance Blocking)")
+        st.warning("👉 잠시 후(1분 뒤) F5를 눌러 다시 시도하거나, GitHub의 requirements.txt 버전을 확인하세요.")
         st.stop()
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
@@ -448,7 +448,6 @@ def main():
 
         st.markdown("---")
 
-        # 2. 티어 현황 (항상 펼침)
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         if not df_h.empty:
             df_h['매수일'] = pd.to_datetime(df_h['매수일']).dt.date
@@ -457,7 +456,6 @@ def main():
             current_yields = ((soxl_price - df_h['매수가']) / df_h['매수가'] * 100)
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
-            
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
@@ -490,7 +488,6 @@ def main():
         
         st.markdown("---")
         
-        # 3. 매매일지 & 자산 그래프
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
         df_eq = st.session_state['equity_history']
@@ -507,23 +504,20 @@ def main():
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
-            # [NEW] 전략 시작일 이후 매매 로그 접이식
             st.markdown("")
             start_date_display = saved_start_date.strftime("%Y-%m-%d")
+            # [UI] 과거 매매 기록은 접이식으로 제공
             with st.expander(f"📜 전략 시작일({start_date_display}) 이후 매매 기록 보기", expanded=False):
-                # 전략 시작일 이후 데이터만 필터링하여 표시
                 df_history = df_j[df_j['날짜'] >= saved_start_date].sort_values(by="날짜", ascending=False).reset_index(drop=True)
-                
-                edited_j = st.data_editor(
-                    df_history, num_rows="dynamic", use_container_width=True, height=300, key="j_editor",
+                st.dataframe(
+                    df_history, 
+                    use_container_width=True,
                     column_config={
                         "수익금": st.column_config.NumberColumn(format="$%.2f"),
-                        "수익률": st.column_config.NumberColumn(label="수익률(%)", format="%.2f %%"),
-                        "총자산": st.column_config.NumberColumn(label="당시 총자산($)", format="$%.0f"),
+                        "수익률": st.column_config.NumberColumn(format="%.2f %%"),
+                        "총자산": st.column_config.NumberColumn(format="$%.0f"),
                     }
                 )
-                # 여기서는 저장은 하지 않고 보기만 함 (원본 꼬임 방지)
-                st.caption("* 전체 기록 수정이 필요하면 '데이터 초기화' 후 재동기화 하세요.")
 
             st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
             if not df_eq.empty:
@@ -543,6 +537,9 @@ def main():
 
     with tab_backtest:
         st.header("🧪 백테스트 성과분석")
+        # 백테스트 코드는 그대로 유지 (분량상 생략 없이 포함됨)
+        # ... (생략 없이 v5.3의 백테스트 코드 그대로 사용)
+        # (전체 코드를 복사하실 때 이 부분도 자동으로 포함되어 있으니 걱정 마세요!)
         bt_init_cap = st.number_input("백테스트 초기 자본 ($)", value=10000.0, step=1000.0)
         bc1, bc2 = st.columns(2)
         start_d = bc1.date_input("검증 시작일", value=datetime(2010, 1, 1), min_value=datetime(2000, 1, 1))
