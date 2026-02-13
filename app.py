@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.1", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.2", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -71,7 +71,7 @@ def calc_mode_series(df_qqq):
     delta = qqq_weekly.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
-    # Wilder's Smoothing (Window 14) - 표준 RSI 공식
+    # Wilder's Smoothing
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down
@@ -189,20 +189,16 @@ def auto_sync_engine(df, start_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
 
-        # 매도 로직 (LOC 기준: 종가가 목표가 이상일 때 체결)
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
             s['days'] += 1
             rule = local_params.get(s['birth_mode'], local_params['Safe'])
-            # [LOC Logic] price는 종가이므로, 종가가 목표가 이상이면 체결됨 (올바름)
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
-                
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
-                
                 journal.append({
                     "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
@@ -213,7 +209,6 @@ def auto_sync_engine(df, start_date, init_cap):
                 sold_idx.append(i)
         for i in sold_idx: del slots[i]
         
-        # 매수 로직 (LOC 기준)
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -283,7 +278,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
             s = slots[i]
             s['days'] += 1
             rule = local_params.get(s['birth_mode'], local_params['Safe'])
-            # LOC Sell Simulation: Checking against Close Price
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
@@ -348,7 +342,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.1 (LOC Edition)")
+    st.title("💎 동파법 마스터 v5.2 (Simple View)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -421,51 +415,42 @@ def main():
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # 1. 통합 주문표 (LOC 로직 반영)
+        # 1. 통합 주문표 (SIMPLE VIEW - 리스트 형태)
         order_date_str = today.strftime("%Y-%m-%d")
-        st.subheader(f"📋 오늘의 통합 주문표 (Order Plan - {order_date_str})")
+        st.subheader(f"📋 오늘의 주문 (Today's Orders - {order_date_str})")
         
         df_h = st.session_state['holdings']
-        orders = []
+        sell_orders = []
+        buy_orders = []
         
+        # 1) 매도 주문 계산
         if not df_h.empty:
             df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
             for idx, row in df_h.iterrows():
-                # 손절기한 만료 -> MOC 매도
                 if row['손절기한'] <= today:
-                    orders.append({
-                        "구분": "🔴 매도 (Sell)", "티어": f"티어 {idx+1}", 
-                        "수량": f"{row['수량']}주", "가격": "Market", "주문유형": "MOC (기한만료)"
-                    })
-                # 익절 대기 -> LOC 매도
+                    sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (시장가) - **MOC (기간만료)**")
                 else:
-                    orders.append({
-                        "구분": "🔵 매도 (Sell)", "티어": f"티어 {idx+1}", 
-                        "수량": f"{row['수량']}주", "가격": f"${row['목표가']:.2f}", "주문유형": "LOC (익절)"
-                    })
+                    sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (${row['목표가']:.2f}) - **LOC (익절)**")
         
+        # 2) 매수 주문 계산
         if soxl_price > 0:
             b_lim = prev_close * (1 + r['buy']/100)
             b_qty = int(slot_sz / soxl_price)
-            orders.append({
-                "구분": "🟢 매수 (Buy)", "티어": "신규", 
-                "수량": f"{b_qty}주 (예상)", "가격": f"${b_lim:.2f}", "주문유형": "LOC (지정가)"
-            })
+            buy_orders.append(f"**[매수]** 신규: **{b_qty}주 (예상)** (${b_lim:.2f}) - **LOC (진입)**")
             
-        if orders:
-            df_orders = pd.DataFrame(orders)
-            st.dataframe(
-                df_orders, 
-                use_container_width=True,
-                column_config={
-                    "구분": st.column_config.TextColumn("구분", width="small"),
-                    "티어": st.column_config.TextColumn("티어", width="small"),
-                    "가격": st.column_config.TextColumn("가격 ($)", width="medium"),
-                    "주문유형": st.column_config.TextColumn("주문 유형", width="medium"),
-                }
-            )
+        # 3) 화면 출력 (카드 형태)
+        if not sell_orders and not buy_orders:
+            st.info("오늘 예정된 주문이 없습니다. (No Orders)")
         else:
-            st.info("오늘 예정된 주문이 없습니다.")
+            # 매도 주문 (빨간색 에러 박스 활용)
+            if sell_orders:
+                for order in sell_orders:
+                    st.error(order)
+            
+            # 매수 주문 (초록색 성공 박스 활용)
+            if buy_orders:
+                for order in buy_orders:
+                    st.success(order)
 
         st.markdown("---")
 
@@ -479,7 +464,6 @@ def main():
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
             
-            # 상태 표시 업데이트 (LOC 대기)
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
