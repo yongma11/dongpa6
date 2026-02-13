@@ -10,11 +10,13 @@ from github import Github
 from io import StringIO
 import json
 import time
+import matplotlib.pyplot as plt  # [복구] 그래프 그리기용
+import matplotlib.ticker as mtick # [복구] 축 서식용
 
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 커스텀 CSS (UI 유지)
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v6.1", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v6.2", page_icon="💎", layout="wide")
 
 # (기존 CSS 코드 유지)
 st.markdown("""
@@ -204,6 +206,7 @@ def auto_sync_engine(df, start_date, init_cap):
     for date, row in sim_df.iterrows():
         price = row['Price']
         mode = row['Mode']
+        
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -376,11 +379,11 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v6.1 (Stable & Modern)")
+    st.title("💎 동파법 마스터 v6.2 (Hotfix)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    with st.spinner("데이터 로딩 중... (3회 재시도)"):
+    with st.spinner("데이터 연결 중... (3회 재시도)"):
         df = get_data_final()
     
     offline_mode = False
@@ -569,11 +572,8 @@ def main():
         init_prin = saved_init_cap
         
         if not df_j.empty:
-            df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
-            df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             total_prof_j = df_j['수익금'].sum()
             total_yield_j = (total_prof_j / init_prin * 100)
-            
             mc1, mc2, mc3 = st.columns(3)
             mc1.metric("🏁 시작 원금", f"${init_prin:,.0f}")
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
@@ -675,7 +675,7 @@ def main():
                         st.dataframe(df_debug.sort_index(ascending=False), use_container_width=True)
                     else: st.error("데이터 부족")
 
-    with tab_logic:
+   with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
         st.markdown("""
         ### 1. 전략 개요 (Philosophy)
