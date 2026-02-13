@@ -12,71 +12,21 @@ import json
 import time
 
 # ---------------------------------------------------------
-# 1. 페이지 설정 & 커스텀 CSS (UI 업그레이드)
+# 1. 페이지 설정 & 커스텀 CSS (UI 유지)
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v6.0", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v6.1", page_icon="💎", layout="wide")
 
-# [NEW] 모던 UI를 위한 커스텀 CSS 주입
+# (기존 CSS 코드 유지)
 st.markdown("""
 <style>
-    /* 1. 폰트 적용 (Pretendard) */
     @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css");
-    html, body, [class*="css"] {
-        font-family: 'Pretendard', sans-serif;
-    }
-    
-    /* 2. 카드 스타일 (주문표 등) */
-    .st-card {
-        background-color: #ffffff;
-        padding: 20px;
-        border-radius: 12px;
-        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05);
-        border: 1px solid #e0e0e0;
-        margin-bottom: 15px;
-    }
-    
-    /* 다크모드 대응 */
-    @media (prefers-color-scheme: dark) {
-        .st-card {
-            background-color: #262730;
-            border: 1px solid #41424b;
-        }
-    }
-
-    /* 3. 상태 뱃지 스타일 */
-    .badge-buy {
-        background-color: #e6f4ea;
-        color: #1e8e3e;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: bold;
-        font-size: 0.9em;
-    }
-    .badge-sell {
-        background-color: #fce8e6;
-        color: #d93025;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: bold;
-        font-size: 0.9em;
-    }
-    .badge-info {
-        background-color: #e8f0fe;
-        color: #1a73e8;
-        padding: 4px 8px;
-        border-radius: 4px;
-        font-weight: bold;
-        font-size: 0.9em;
-    }
-
-    /* 4. 메트릭 박스 강조 */
-    div[data-testid="stMetric"] {
-        background-color: rgba(255, 255, 255, 0.05);
-        border: 1px solid rgba(128, 128, 128, 0.2);
-        padding: 15px;
-        border-radius: 10px;
-        text-align: center;
-    }
+    html, body, [class*="css"] { font-family: 'Pretendard', sans-serif; }
+    .st-card { background-color: #ffffff; padding: 20px; border-radius: 12px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.05); border: 1px solid #e0e0e0; margin-bottom: 15px; }
+    @media (prefers-color-scheme: dark) { .st-card { background-color: #262730; border: 1px solid #41424b; } }
+    .badge-buy { background-color: #e6f4ea; color: #1e8e3e; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    .badge-sell { background-color: #fce8e6; color: #d93025; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    .badge-info { background-color: #e8f0fe; color: #1a73e8; padding: 4px 8px; border-radius: 4px; font-weight: bold; font-size: 0.9em; }
+    div[data-testid="stMetric"] { background-color: rgba(255, 255, 255, 0.05); border: 1px solid rgba(128, 128, 128, 0.2); padding: 15px; border-radius: 10px; text-align: center; }
 </style>
 """, unsafe_allow_html=True)
 
@@ -101,35 +51,49 @@ EQUITY_FILE = "equity_history.csv"
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수
+# 2. 데이터 & 엔진 함수 (벤치마킹 적용)
 # ---------------------------------------------------------
-@st.cache_data(ttl=300)
+@st.cache_data(ttl=600) # 10분 캐시 (안정성 확보)
 def get_data_final(period='max'):
+    # 시그마2 방식 벤치마킹: 긴 기간 데이터를 한 번에 요청 (Bulk Request)
     for attempt in range(3):
         try:
-            start_date = '2010-01-01'
-            session = requests.Session()
-            session.headers.update({"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"})
+            start_date = '2005-01-01' # 충분히 긴 기간 설정
+            end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
             
-            def fetch_ticker(symbol):
-                ticker = yf.Ticker(symbol, session=session)
-                df = ticker.history(start=start_date, auto_adjust=False)
-                return df['Close'] if not df.empty else None
-
-            qqq_close = fetch_ticker("QQQ")
-            soxl_close = fetch_ticker("SOXL")
+            # yfinance 최신 옵션 적용 (auto_adjust=True 권장)
+            # progress=False로 불필요한 출력 제거
+            df_qqq = yf.download("QQQ", start=start_date, end=end_date, progress=False, auto_adjust=True)
+            df_soxl = yf.download("SOXL", start=start_date, end=end_date, progress=False, auto_adjust=True)
             
-            if qqq_close is None or soxl_close is None:
+            # 데이터 검증
+            if df_qqq.empty or df_soxl.empty:
                 time.sleep(1)
                 continue
 
+            # MultiIndex 처리 (버전 호환성)
+            if isinstance(df_qqq.columns, pd.MultiIndex): qqq_close = df_qqq['Close']['QQQ']
+            else: qqq_close = df_qqq['Close']
+            
+            if isinstance(df_soxl.columns, pd.MultiIndex): soxl_close = df_soxl['Close']['SOXL']
+            else: soxl_close = df_soxl['Close']
+
+            # 데이터 병합 및 정제 (시그마2 방식)
             df = pd.DataFrame({'QQQ': qqq_close, 'SOXL': soxl_close})
+            df = df.sort_index() # 날짜순 정렬 보장
+            
+            # 결측치 처리 (주말/공휴일 등으로 인한 구멍 메우기)
             df = df.ffill().bfill().dropna()
+            
+            # 시간대 정보 제거 (비교 오류 방지)
             df.index = df.index.tz_localize(None)
+            
             return df
 
         except Exception as e:
+            print(f"Data Load Failed (Attempt {attempt+1}): {e}")
             time.sleep(1)
+            
     return None
 
 def calc_mode_series(df_qqq):
@@ -412,11 +376,11 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v6.0 (Modern UI)")
+    st.title("💎 동파법 마스터 v6.1 (Stable & Modern)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    with st.spinner("데이터 연결 중... (3회 재시도)"):
+    with st.spinner("데이터 로딩 중... (3회 재시도)"):
         df = get_data_final()
     
     offline_mode = False
@@ -424,7 +388,6 @@ def main():
         offline_mode = True
         st.warning("⚠️ **오프라인 모드:** 현재가 업데이트 중단. (기존 데이터 표시)")
     
-    # 변수 초기화
     if not offline_mode:
         mode_s, rsi_s = calc_mode_series(df['QQQ'])
         curr_mode = mode_s.iloc[-1]
@@ -506,15 +469,13 @@ def main():
         r = PARAMS[curr_mode]
         slot_sz = saved_init_cap / MAX_SLOTS
         
-        # [UI] 메트릭 섹션
         c1, c2, c3, c4 = st.columns(4)
-        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.2f}" if not offline_mode else "Offline")
+        c1.metric("시장 모드", f"{r['desc']}", f"RSI {curr_rsi:.2f}" if not offline_mode else "Offline", delta_color="inverse")
         c2.metric("SOXL 현재가", f"${soxl_price:.2f}" if not offline_mode else "Offline", f"{((soxl_price-prev_close)/prev_close)*100:.2f}%" if not offline_mode and prev_close > 0 else "-")
         c3.metric("1슬롯 할당금", f"${slot_sz:,.0f}")
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # [UI] 통합 주문표 (카드형)
         order_date_str = today.strftime("%Y-%m-%d")
         st.subheader(f"📋 오늘의 주문 (Today's Orders - {order_date_str})")
         
@@ -522,50 +483,42 @@ def main():
             st.warning("오프라인 모드에서는 최신 주문을 생성할 수 없습니다.")
         else:
             df_h = st.session_state['holdings']
-            orders_exist = False
+            sell_orders = []
+            buy_orders = []
             
-            # 매도 카드
             if not df_h.empty:
                 df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
                 for idx, row in df_h.iterrows():
                     if row['손절기한'] <= today:
-                        st.markdown(f"""
-                        <div class="st-card" style="border-left: 5px solid #d93025;">
-                            <span class="badge-sell">매도 (MOC)</span>
-                            <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">티어 {idx+1}</span>
-                            <br><span style="color:#666; margin-top:5px; display:block;">수량: {row['수량']}주 | 가격: 시장가 (기한만료)</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        orders_exist = True
+                        sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (시장가) - **MOC (기간만료)**")
                     else:
-                        st.markdown(f"""
-                        <div class="st-card" style="border-left: 5px solid #1a73e8;">
-                            <span class="badge-info">매도 (LOC)</span>
-                            <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">티어 {idx+1}</span>
-                            <br><span style="color:#666; margin-top:5px; display:block;">수량: {row['수량']}주 | 목표가: ${row['목표가']:.2f}</span>
-                        </div>
-                        """, unsafe_allow_html=True)
-                        orders_exist = True
+                        sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (${row['목표가']:.2f}) - **LOC (익절)**")
             
-            # 매수 카드
             if soxl_price > 0:
                 b_lim = prev_close * (1 + r['buy']/100)
                 b_qty = int(slot_sz / soxl_price)
-                st.markdown(f"""
-                <div class="st-card" style="border-left: 5px solid #1e8e3e;">
-                    <span class="badge-buy">매수 (LOC)</span>
-                    <span style="font-size:1.1em; font-weight:bold; margin-left:10px;">신규 진입</span>
-                    <br><span style="color:#666; margin-top:5px; display:block;">수량: {b_qty}주 (예상) | 타점: ${b_lim:.2f} 이하</span>
-                </div>
-                """, unsafe_allow_html=True)
-                orders_exist = True
+                buy_orders.append(f"**[매수]** 신규: **{b_qty}주 (예상)** (${b_lim:.2f}) - **LOC (진입)**")
                 
-            if not orders_exist:
+            if not sell_orders and not buy_orders:
                 st.info("오늘 예정된 주문이 없습니다. (No Orders)")
+            else:
+                if sell_orders:
+                    for order in sell_orders:
+                        st.markdown(f"""
+                        <div class="st-card" style="border-left: 5px solid #d93025;">
+                            <span class="badge-sell">매도</span> {order.replace('**[매도]**', '')}
+                        </div>
+                        """, unsafe_allow_html=True)
+                if buy_orders:
+                    for order in buy_orders:
+                        st.markdown(f"""
+                        <div class="st-card" style="border-left: 5px solid #1e8e3e;">
+                            <span class="badge-buy">매수</span> {order.replace('**[매수]**', '')}
+                        </div>
+                        """, unsafe_allow_html=True)
 
         st.markdown("---")
 
-        # [UI] 티어 현황 (항상 보임)
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         df_h = st.session_state['holdings']
         if not df_h.empty:
@@ -583,52 +536,54 @@ def main():
                 total_qty = df_h['수량'].sum()
                 total_invested = (df_h['매수가'] * df_h['수량']).sum()
                 avg_price = total_invested / total_qty if total_qty > 0 else 0
-                total_profit = (total_qty * soxl_price) - total_invested
+                current_val = total_qty * soxl_price
+                total_profit = current_val - total_invested
                 total_yield_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
                 
-                # 요약 지표
-                c1, c2, c3, c4 = st.columns(4)
-                c1.metric("총 보유수량", f"{total_qty} 주")
-                c2.metric("평단가", f"${avg_price:,.2f}")
-                c3.metric("평가손익", f"${total_profit:,.2f}", delta_color="normal")
-                c4.metric("수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
+                st.markdown("#### 📌 전체 계좌 요약")
+                sc1, sc2, sc3, sc4 = st.columns(4)
+                sc1.metric("총 보유수량", f"{total_qty} 주")
+                sc2.metric("통합 평단가", f"${avg_price:,.2f}")
+                sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
+                sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            st.markdown("👇 **보유 티어 상세 (편집 가능)**")
+            st.markdown("👇 **보유 티어 상세 내역 (편집 가능)**")
             edited_h = st.data_editor(
                 df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
                 column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
             )
-            if st.button("💾 티어 수정 저장"):
+            if st.button("💾 티어 수정 저장 (GitHub)"):
                 save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
                 save_csv(edited_h[save_cols], HOLDINGS_FILE)
                 st.session_state['holdings'] = edited_h[save_cols]
-                st.success("저장 완료!")
+                st.success("저장되었습니다!")
                 st.rerun()
         else: st.info("현재 보유 중인 티어가 없습니다.")
         
         st.markdown("---")
         
-        # [UI] 매매일지 및 히스토리
-        st.subheader("📝 매매 수익 기록장")
+        st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
         df_eq = st.session_state['equity_history']
         df_log = st.session_state['action_log']
         init_prin = saved_init_cap
         
         if not df_j.empty:
+            df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
+            df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
             total_prof_j = df_j['수익금'].sum()
             total_yield_j = (total_prof_j / init_prin * 100)
-            c1, c2, c3 = st.columns(3)
-            c1.metric("시작 원금", f"${init_prin:,.0f}")
-            c2.metric("누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
-            c3.metric("총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
+            
+            mc1, mc2, mc3 = st.columns(3)
+            mc1.metric("🏁 시작 원금", f"${init_prin:,.0f}")
+            mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
+            mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
         else:
             st.info("아직 실현된 수익이 없습니다.")
 
         st.markdown("")
         start_date_display = saved_start_date.strftime("%Y-%m-%d")
         
-        # [UI] 상세 매매 기록 (접이식)
         with st.expander(f"📜 전략 시작일({start_date_display}) 이후 상세 매매 기록 보기", expanded=False):
             if not df_log.empty:
                 st.dataframe(
@@ -642,8 +597,7 @@ def main():
             else:
                 st.caption("⚠️ 기록된 매매 내역이 없습니다.")
 
-        # [UI] 자산 그래프
-        st.markdown("### 📈 자산 성장 그래프")
+        st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
         if not df_eq.empty:
             df_eq['날짜'] = pd.to_datetime(df_eq['날짜'])
             df_eq = df_eq.sort_values(by="날짜")
@@ -663,7 +617,6 @@ def main():
         if offline_mode:
             st.warning("오프라인 모드에서는 백테스트를 실행할 수 없습니다.")
         else:
-            # 백테스트 코드는 이전과 동일
             bt_init_cap = st.number_input("백테스트 초기 자본 ($)", value=10000.0, step=1000.0)
             bc1, bc2 = st.columns(2)
             start_d = bc1.date_input("검증 시작일", value=datetime(2010, 1, 1), min_value=datetime(2000, 1, 1))
