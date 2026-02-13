@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.2", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.3", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -197,8 +197,10 @@ def auto_sync_engine(df, start_date, init_cap):
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
+                
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
+                
                 journal.append({
                     "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
@@ -272,7 +274,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
         else:
             if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
         action_today = "관망"
-        
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
             s = slots[i]
@@ -291,7 +292,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                 sold_idx.append(i)
                 action_today = "매도 (익절/손절)"
         for i in sold_idx: del slots[i]
-        
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -302,7 +302,6 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                     real_cash -= amt
                     slots.append({'buy_price': price, 'shares': shares, 'days': 0, 'birth_mode': mode})
                     action_today = "매수 (LOC)"
-        
         current_equity = real_cash + sum(s['shares']*price for s in slots)
         equity_curve.append({'Date': date, 'Equity': current_equity})
         debug_logs.append({"날짜": date.date(), "RSI (주봉)": f"{rsi_val:.2f}", "적용 모드": mode, "SOXL 종가": f"${price:.2f}", "매매 행동": action_today, "총 자산": f"${current_equity:,.0f}"})
@@ -342,7 +341,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.2 (Simple View)")
+    st.title("💎 동파법 마스터 v5.3 (Final UI)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
@@ -415,7 +414,7 @@ def main():
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # 1. 통합 주문표 (SIMPLE VIEW - 리스트 형태)
+        # 1. 통합 주문표
         order_date_str = today.strftime("%Y-%m-%d")
         st.subheader(f"📋 오늘의 주문 (Today's Orders - {order_date_str})")
         
@@ -423,7 +422,6 @@ def main():
         sell_orders = []
         buy_orders = []
         
-        # 1) 매도 주문 계산
         if not df_h.empty:
             df_h['손절기한'] = pd.to_datetime(df_h['손절기한']).dt.date
             for idx, row in df_h.iterrows():
@@ -432,29 +430,22 @@ def main():
                 else:
                     sell_orders.append(f"**[매도]** 티어{idx+1}: **{row['수량']}주** (${row['목표가']:.2f}) - **LOC (익절)**")
         
-        # 2) 매수 주문 계산
         if soxl_price > 0:
             b_lim = prev_close * (1 + r['buy']/100)
             b_qty = int(slot_sz / soxl_price)
             buy_orders.append(f"**[매수]** 신규: **{b_qty}주 (예상)** (${b_lim:.2f}) - **LOC (진입)**")
             
-        # 3) 화면 출력 (카드 형태)
         if not sell_orders and not buy_orders:
             st.info("오늘 예정된 주문이 없습니다. (No Orders)")
         else:
-            # 매도 주문 (빨간색 에러 박스 활용)
             if sell_orders:
-                for order in sell_orders:
-                    st.error(order)
-            
-            # 매수 주문 (초록색 성공 박스 활용)
+                for order in sell_orders: st.error(order)
             if buy_orders:
-                for order in buy_orders:
-                    st.success(order)
+                for order in buy_orders: st.success(order)
 
         st.markdown("---")
 
-        # 2. 티어 현황
+        # 2. 티어 현황 (UI 개선: 요약 먼저 -> 상세 표 접기)
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         if not df_h.empty:
             df_h['매수일'] = pd.to_datetime(df_h['매수일']).dt.date
@@ -463,23 +454,17 @@ def main():
             current_yields = ((soxl_price - df_h['매수가']) / df_h['매수가'] * 100)
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
-            
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
-            st.caption("👇 GitHub 데이터")
-            edited_h = st.data_editor(
-                df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
-                column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
-            )
-            
-            total_qty = edited_h['수량'].sum()
-            total_invested = (edited_h['매수가'] * edited_h['수량']).sum()
+            total_qty = edited_h['수량'].sum() if 'edited_h' in locals() else df_h['수량'].sum()
+            total_invested = (df_h['매수가'] * df_h['수량']).sum()
             avg_price = total_invested / total_qty if total_qty > 0 else 0
             current_val = total_qty * soxl_price
             total_profit = current_val - total_invested
             total_yield_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
             
+            # [UI 변경] 요약 숫자를 먼저 배치
             st.markdown("#### 📌 전체 계좌 요약")
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("총 보유수량", f"{total_qty} 주")
@@ -487,12 +472,21 @@ def main():
             sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
             sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            if st.button("💾 티어 수정 저장 (GitHub)"):
-                save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
-                save_csv(edited_h[save_cols], HOLDINGS_FILE)
-                st.session_state['holdings'] = edited_h[save_cols]
-                st.success("저장되었습니다!")
-                st.rerun()
+            st.markdown("") # 간격
+
+            # [UI 변경] 상세 표는 접이식으로 숨김
+            with st.expander("📂 보유 티어 상세 내역 (펼치기/수정)", expanded=False):
+                st.caption("👇 GitHub 데이터 (수정 가능)")
+                edited_h = st.data_editor(
+                    df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
+                    column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
+                )
+                if st.button("💾 티어 수정 저장 (GitHub)"):
+                    save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
+                    save_csv(edited_h[save_cols], HOLDINGS_FILE)
+                    st.session_state['holdings'] = edited_h[save_cols]
+                    st.success("저장되었습니다!")
+                    st.rerun()
         else: st.info("보유 티어 없음")
         
         st.markdown("---")
@@ -506,7 +500,6 @@ def main():
         if not df_j.empty:
             df_j['날짜'] = pd.to_datetime(df_j['날짜']).dt.date
             df_j = df_j.sort_values(by="날짜", ascending=True).reset_index(drop=True)
-            
             total_prof_j = df_j['수익금'].sum()
             total_yield_j = (total_prof_j / init_prin * 100)
             
@@ -516,7 +509,6 @@ def main():
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
             st.markdown("")
-            
             with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
                 st.caption("👇 GitHub 기록 (최신순)")
                 df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
@@ -548,10 +540,8 @@ def main():
                 ax.grid(True, linestyle='--', alpha=0.3)
                 ax.yaxis.set_major_formatter(mtick.StrMethodFormatter('${x:,.0f}'))
                 st.pyplot(fig)
-            else:
-                st.info("그래프 데이터가 없습니다. '자동 동기화'를 실행해주세요.")
-        else:
-            st.info("실현된 수익 없음.")
+            else: st.info("그래프 데이터가 없습니다.")
+        else: st.info("실현된 수익 없음.")
 
         with st.expander("✍️ 수동 기록 추가"):
             with st.form("journal_manual"):
