@@ -10,15 +10,14 @@ from github import Github
 from io import StringIO
 import json
 import time
-import matplotlib.pyplot as plt  # [복구] 그래프 그리기용
-import matplotlib.ticker as mtick # [복구] 축 서식용
+import matplotlib.pyplot as plt
+import matplotlib.ticker as mtick
 
 # ---------------------------------------------------------
-# 1. 페이지 설정 & 커스텀 CSS (UI 유지)
+# 1. 페이지 설정 & 커스텀 CSS
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v6.2", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v6.3", page_icon="💎", layout="wide")
 
-# (기존 CSS 코드 유지)
 st.markdown("""
 <style>
     @import url("https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.8/dist/web/static/pretendard.css");
@@ -53,47 +52,35 @@ EQUITY_FILE = "equity_history.csv"
 SETTINGS_FILE = "settings.json"
 
 # ---------------------------------------------------------
-# 2. 데이터 & 엔진 함수 (벤치마킹 적용)
+# 2. 데이터 & 엔진 함수
 # ---------------------------------------------------------
-@st.cache_data(ttl=600) # 10분 캐시 (안정성 확보)
+@st.cache_data(ttl=600)
 def get_data_final(period='max'):
-    # 시그마2 방식 벤치마킹: 긴 기간 데이터를 한 번에 요청 (Bulk Request)
     for attempt in range(3):
         try:
-            start_date = '2005-01-01' # 충분히 긴 기간 설정
+            start_date = '2005-01-01'
             end_date = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
             
-            # yfinance 최신 옵션 적용 (auto_adjust=True 권장)
-            # progress=False로 불필요한 출력 제거
             df_qqq = yf.download("QQQ", start=start_date, end=end_date, progress=False, auto_adjust=True)
             df_soxl = yf.download("SOXL", start=start_date, end=end_date, progress=False, auto_adjust=True)
             
-            # 데이터 검증
             if df_qqq.empty or df_soxl.empty:
                 time.sleep(1)
                 continue
 
-            # MultiIndex 처리 (버전 호환성)
             if isinstance(df_qqq.columns, pd.MultiIndex): qqq_close = df_qqq['Close']['QQQ']
             else: qqq_close = df_qqq['Close']
             
             if isinstance(df_soxl.columns, pd.MultiIndex): soxl_close = df_soxl['Close']['SOXL']
             else: soxl_close = df_soxl['Close']
 
-            # 데이터 병합 및 정제 (시그마2 방식)
             df = pd.DataFrame({'QQQ': qqq_close, 'SOXL': soxl_close})
-            df = df.sort_index() # 날짜순 정렬 보장
-            
-            # 결측치 처리 (주말/공휴일 등으로 인한 구멍 메우기)
-            df = df.ffill().bfill().dropna()
-            
-            # 시간대 정보 제거 (비교 오류 방지)
+            df = df.sort_index().ffill().bfill().dropna()
             df.index = df.index.tz_localize(None)
             
             return df
 
         except Exception as e:
-            print(f"Data Load Failed (Attempt {attempt+1}): {e}")
             time.sleep(1)
             
     return None
@@ -206,7 +193,6 @@ def auto_sync_engine(df, start_date, init_cap):
     for date, row in sim_df.iterrows():
         price = row['Price']
         mode = row['Mode']
-        
         cycle_days += 1
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
@@ -294,23 +280,25 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
     slots = []
     equity_curve = []
     debug_logs = []
-    cycle_days = 0
     gross_profit = 0.0
     gross_loss = 0.0
     local_params = {'Safe': {'buy': 0.03, 'sell': 1.005, 'time': 35}, 'Offense': {'buy': 0.05, 'sell': 1.03, 'time': 7}}
     
+    cycle_days = 0
+    current_slot_size = init_cap / 7
+
     for date, row in sim_df.iterrows():
         price = row['Price']
         mode = row['Mode']
         rsi_val = row['RSI']
         cycle_days += 1
+        
         if cycle_days >= 10:
             virtual = init_cap + (cum_profit * 0.7) - (cum_loss * 0.6)
             if virtual < 1000: virtual = 1000
             current_slot_size = virtual / 7
             cycle_days = 0
-        else:
-            if 'current_slot_size' not in locals(): current_slot_size = init_cap / 7
+        
         action_today = "관망"
         sold_idx = []
         for i in range(len(slots)-1, -1, -1):
@@ -330,6 +318,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                 sold_idx.append(i)
                 action_today = "매도 (익절/손절)"
         for i in sold_idx: del slots[i]
+        
         chg = (price - row['Prev_Price']) / row['Prev_Price']
         curr_rule = local_params.get(mode, local_params['Safe'])
         if chg <= curr_rule['buy']:
@@ -340,6 +329,7 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
                     real_cash -= amt
                     slots.append({'buy_price': price, 'shares': shares, 'days': 0, 'birth_mode': mode})
                     action_today = "매수 (LOC)"
+        
         current_equity = real_cash + sum(s['shares']*price for s in slots)
         equity_curve.append({'Date': date, 'Equity': current_equity})
         debug_logs.append({"날짜": date.date(), "RSI (주봉)": f"{rsi_val:.2f}", "적용 모드": mode, "SOXL 종가": f"${price:.2f}", "매매 행동": action_today, "총 자산": f"${current_equity:,.0f}"})
@@ -379,11 +369,11 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v6.2 (Hotfix)")
+    st.title("💎 동파법 마스터 v6.3 (Indentation Fixed)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    with st.spinner("데이터 연결 중... (3회 재시도)"):
+    with st.spinner("데이터 로딩 중... (3회 재시도)"):
         df = get_data_final()
     
     offline_mode = False
@@ -677,7 +667,50 @@ def main():
 
     with tab_logic:
         st.header("📚 동파법(Dongpa) 전략 매뉴얼 (상세)")
-        st.markdown("""...""")
+        st.markdown("""
+        ### 1. 전략 개요 (Philosophy)
+        * **핵심:** "시장의 계절(Mode)을 먼저 파악하고, 그에 맞는 옷(Rule)을 입는다."
+        * **대상:** SOXL (3배 레버리지) / **지표:** QQQ (나스닥100)
+        * **특징:** 예측보다는 **대응**에 초점을 맞춘 변동성 돌파 & 추세 추종 하이브리드 전략.
+
+        ---
+
+        ### 2. 시장 모드 판단 (Market Modes)
+        매주 금요일 종가 기준으로 **QQQ 주봉 RSI(14)**를 분석하여 다음 주의 모드를 결정합니다.
+
+        | 모드 | 조건 (Condition) | 시장 상황 해석 |
+        | :--- | :--- | :--- |
+        | **🛡️ Safe** | `RSI > 65` & `하락` | 고점 과열 후 꺾임 (조정 임박) |
+        | **🛡️ Safe** | `40 < RSI < 50` & `하락` | 약세장에서의 지속 하락 |
+        | **🛡️ Safe** | `50선 하향 돌파` | 추세가 꺾이는 데드크로스 |
+        | **⚔️ Offense** | `RSI < 35` & `상승` | 과매도권에서의 바닥 반등 |
+        | **⚔️ Offense** | `50 < RSI < 60` & `상승` | 전형적인 상승 추세 |
+        | **⚔️ Offense** | `50선 상향 돌파` | 추세가 살아나는 골든크로스 |
+        
+        * **유지(Hold):** 위 조건에 해당하지 않으면 **직전 주의 모드를 그대로 유지**합니다.
+
+        ---
+
+        ### 3. 실전 매매 규칙 (Action Rules)
+        **중요:** 매수 체결 당시의 모드 규칙을 매도 시까지 유지합니다 (Sticky Rule).
+
+        | 구분 | 🛡️ 방어 (Safe) | ⚔️ 공세 (Offense) |
+        | :--- | :--- | :--- |
+        | **매수 타점** | 전일 종가 대비 **-3.0%** | 전일 종가 대비 **-5.0%** |
+        | **익절 목표** | 매수가 대비 **+0.5%** | 매수가 대비 **+3.0%** |
+        | **손절 기한** | **35 거래일** | **7 거래일** |
+        
+        #### 🛒 주문 방식 (Order Types)
+        * **매수:** **LOC (Limit On Close)** - 장 마감 종가가 타점 이하일 때만 체결.
+        * **익절 매도:** **LOC (Limit On Close)** - 장 마감 종가가 목표가 이상일 때만 체결 (장중 휩소 방지).
+        * **기간 만료 매도:** **MOC (Market On Close)** - 손절 기한 도래 시 장 마감 시장가로 무조건 청산.
+
+        ---
+
+        ### 4. 자금 관리 (Money Management)
+        * **7분할:** 총 자금을 7개 슬롯으로 분할 투입하여 리스크를 분산합니다.
+        * **10일 리셋:** 2주(10거래일)마다 총 자산 기준으로 슬롯 크기를 재산정하여 복리 효과를 극대화합니다.
+        """)
 
 if __name__ == "__main__":
     main()
