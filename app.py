@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.4", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.5", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -41,20 +41,15 @@ SETTINGS_FILE = "settings.json"
 # ---------------------------------------------------------
 # 2. 데이터 & 엔진 함수
 # ---------------------------------------------------------
-@st.cache_data(ttl=300) # 캐시 시간을 줄여서 자주 재시도
+@st.cache_data(ttl=300)
 def get_data_final(period='max'):
     try:
         start_date = '2010-01-01'
-        
-        # [수정] 다운로드 옵션 강화 (multi_level_index=False 시도 등)
         qqq = yf.download("QQQ", start=start_date, progress=False, auto_adjust=False)
         soxl = yf.download("SOXL", start=start_date, progress=False, auto_adjust=False)
         
-        # 데이터가 비었으면 즉시 에러 리턴
-        if qqq.empty or soxl.empty: 
-            return None
+        if qqq.empty or soxl.empty: return None
 
-        # 컬럼 정리 (MultiIndex 호환성)
         if isinstance(qqq.columns, pd.MultiIndex): 
             try: qqq_close = qqq.xs('Close', level=0, axis=1)['QQQ']
             except: qqq_close = qqq['Close']
@@ -72,7 +67,6 @@ def get_data_final(period='max'):
         df.index = df.index.tz_localize(None)
         return df
     except Exception as e:
-        # 로그에는 남기지만 UI에는 None 반환하여 main에서 처리
         print(f"Data Load Error: {e}")
         return None
 
@@ -81,7 +75,6 @@ def calc_mode_series(df_qqq):
     delta = qqq_weekly.diff()
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
-    # Wilder's Smoothing
     ema_up = up.ewm(com=13, adjust=False).mean()
     ema_down = down.ewm(com=13, adjust=False).mean()
     rs = ema_up / ema_down
@@ -207,10 +200,8 @@ def auto_sync_engine(df, start_date, init_cap):
             if (price >= s['buy_price'] * rule['sell']) or (s['days'] >= rule['time']):
                 rev = s['shares'] * price
                 prof = rev - (s['shares'] * s['buy_price'])
-                
                 current_holdings_val = sum(slots[k]['shares'] * price for k in range(len(slots)) if k != i)
                 equity_at_sell = real_cash + rev + current_holdings_val
-                
                 journal.append({
                     "날짜": date.date(), "총자산": equity_at_sell, "수익금": prof,
                     "수익률": (prof / (equity_at_sell - prof)) * 100 if (equity_at_sell - prof) > 0 else 0
@@ -351,20 +342,15 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.4 (Stability)")
+    st.title("💎 동파법 마스터 v5.5 (History Log)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    # 데이터 로드 시도
-    with st.spinner("미국 주식 데이터를 불러오는 중..."):
+    with st.spinner("데이터 로딩 중..."):
         df = get_data_final()
-    
-    # [NEW] 데이터 로드 실패 시 에러 메시지 출력 후 안전 종료
     if df is None:
-        st.error("📉 주식 데이터를 가져오지 못했습니다! (Yahoo Finance 연결 실패)")
-        st.warning("👉 잠시 후 '새로고침(F5)'을 눌러 다시 시도해주세요.")
-        st.info("💡 팁: 이 현상이 지속되면 'requirements.txt'의 yfinance 버전을 확인해주세요.")
-        st.stop() # 여기서 코드 실행 중단 (제목만 나오는 현상 방지)
+        st.error("📉 데이터 로드 실패. 잠시 후 F5를 눌러주세요.")
+        st.stop()
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
     curr_mode = mode_s.iloc[-1]
@@ -432,7 +418,6 @@ def main():
         c4.metric("매매 사이클", f"{cycle}일차")
         st.markdown("---")
 
-        # 1. 통합 주문표
         order_date_str = today.strftime("%Y-%m-%d")
         st.subheader(f"📋 오늘의 주문 (Today's Orders - {order_date_str})")
         
@@ -463,7 +448,7 @@ def main():
 
         st.markdown("---")
 
-        # 2. 티어 현황
+        # 2. 티어 현황 (항상 펼침)
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         if not df_h.empty:
             df_h['매수일'] = pd.to_datetime(df_h['매수일']).dt.date
@@ -472,6 +457,7 @@ def main():
             current_yields = ((soxl_price - df_h['매수가']) / df_h['매수가'] * 100)
             yield_display = [f"{'🔺' if y > 0 else '🔻'} {y:.2f} %" for y in current_yields]
             df_h['수익률'] = yield_display
+            
             status_list = ["🚨 MOC 매도" if row['손절기한'] <= today else "🔵 LOC 대기" for _, row in df_h.iterrows()]
             df_h['상태'] = status_list
 
@@ -489,24 +475,22 @@ def main():
             sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
             sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            st.markdown("")
-            with st.expander("📂 보유 티어 상세 내역 (펼치기/수정)", expanded=False):
-                st.caption("👇 GitHub 데이터 (수정 가능)")
-                edited_h = st.data_editor(
-                    df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
-                    column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
-                )
-                if st.button("💾 티어 수정 저장 (GitHub)"):
-                    save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
-                    save_csv(edited_h[save_cols], HOLDINGS_FILE)
-                    st.session_state['holdings'] = edited_h[save_cols]
-                    st.success("저장되었습니다!")
-                    st.rerun()
-        else: st.info("보유 티어 없음")
+            st.markdown("👇 **보유 티어 상세 내역 (편집 가능)**")
+            edited_h = st.data_editor(
+                df_h, num_rows="dynamic", use_container_width=True, key="h_edit",
+                column_config={"수익률": st.column_config.TextColumn("수익률", disabled=True), "매수가": st.column_config.NumberColumn(format="$%.2f"), "목표가": st.column_config.NumberColumn(format="$%.1f"), "상태": st.column_config.TextColumn(disabled=True)}
+            )
+            if st.button("💾 티어 수정 저장 (GitHub)"):
+                save_cols = ["매수일", "모드", "매수가", "수량", "목표가", "손절기한"]
+                save_csv(edited_h[save_cols], HOLDINGS_FILE)
+                st.session_state['holdings'] = edited_h[save_cols]
+                st.success("저장되었습니다!")
+                st.rerun()
+        else: st.info("현재 보유 중인 티어가 없습니다.")
         
         st.markdown("---")
         
-        # 3. 매매일지
+        # 3. 매매일지 & 자산 그래프
         st.subheader("📝 매매 수익 기록장 (Cloud 저장)")
         df_j = st.session_state['journal']
         df_eq = st.session_state['equity_history']
@@ -523,25 +507,24 @@ def main():
             mc2.metric("💰 누적 수익금", f"${total_prof_j:,.2f}", delta_color="normal")
             mc3.metric("📈 총 수익률", f"{total_yield_j:.1f}%", delta_color="normal")
             
+            # [NEW] 전략 시작일 이후 매매 로그 접이식
             st.markdown("")
-            with st.expander("📂 상세 수익 기록표 보기/접기 (편집 가능)", expanded=False):
-                st.caption("👇 GitHub 기록 (최신순)")
-                df_display = df_j.sort_values(by="날짜", ascending=False).reset_index(drop=True)
+            start_date_display = saved_start_date.strftime("%Y-%m-%d")
+            with st.expander(f"📜 전략 시작일({start_date_display}) 이후 매매 기록 보기", expanded=False):
+                # 전략 시작일 이후 데이터만 필터링하여 표시
+                df_history = df_j[df_j['날짜'] >= saved_start_date].sort_values(by="날짜", ascending=False).reset_index(drop=True)
+                
                 edited_j = st.data_editor(
-                    df_display, num_rows="dynamic", use_container_width=True, height=400, key="j_editor",
+                    df_history, num_rows="dynamic", use_container_width=True, height=300, key="j_editor",
                     column_config={
                         "수익금": st.column_config.NumberColumn(format="$%.2f"),
                         "수익률": st.column_config.NumberColumn(label="수익률(%)", format="%.2f %%"),
                         "총자산": st.column_config.NumberColumn(label="당시 총자산($)", format="$%.0f"),
                     }
                 )
-                if st.button("💾 일지 수정 저장 (GitHub)"):
-                    if not edited_j.empty:
-                        save_csv(edited_j, JOURNAL_FILE)
-                        st.session_state['journal'] = edited_j
-                        st.success("저장되었습니다!")
-                        st.rerun()
-            
+                # 여기서는 저장은 하지 않고 보기만 함 (원본 꼬임 방지)
+                st.caption("* 전체 기록 수정이 필요하면 '데이터 초기화' 후 재동기화 하세요.")
+
             st.markdown("### 📈 내 자산 성장 그래프 (Equity Curve)")
             if not df_eq.empty:
                 df_eq['날짜'] = pd.to_datetime(df_eq['날짜'])
@@ -557,19 +540,6 @@ def main():
                 st.pyplot(fig)
             else: st.info("그래프 데이터가 없습니다.")
         else: st.info("실현된 수익 없음.")
-
-        with st.expander("✍️ 수동 기록 추가"):
-            with st.form("journal_manual"):
-                jc1, jc2, jc3 = st.columns(3)
-                j_d = jc1.date_input("정산일", value=today)
-                j_p = jc2.number_input("당시 총자산($)", value=float(saved_init_cap))
-                j_r = jc3.number_input("손익($)")
-                if st.form_submit_button("추가"):
-                    nj = {"날짜": j_d, "총자산": j_p, "수익금": j_r, "수익률": (j_r/(j_p-j_r))*100 if (j_p-j_r)>0 else 0}
-                    df_j = pd.concat([df_j, pd.DataFrame([nj])], ignore_index=True)
-                    save_csv(df_j, JOURNAL_FILE)
-                    st.session_state['journal'] = df_j
-                    st.rerun()
 
     with tab_backtest:
         st.header("🧪 백테스트 성과분석")
