@@ -14,7 +14,7 @@ import json
 # ---------------------------------------------------------
 # 1. 페이지 설정 & 스타일
 # ---------------------------------------------------------
-st.set_page_config(page_title="동파법 마스터 v5.3", page_icon="💎", layout="wide")
+st.set_page_config(page_title="동파법 마스터 v5.4", page_icon="💎", layout="wide")
 
 PARAMS = {
     'Safe':    {'buy': 3.0, 'sell': 0.5, 'time': 35, 'desc': '🛡️ 방어 (Safe)'},
@@ -41,20 +41,29 @@ SETTINGS_FILE = "settings.json"
 # ---------------------------------------------------------
 # 2. 데이터 & 엔진 함수
 # ---------------------------------------------------------
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=300) # 캐시 시간을 줄여서 자주 재시도
 def get_data_final(period='max'):
     try:
         start_date = '2010-01-01'
+        
+        # [수정] 다운로드 옵션 강화 (multi_level_index=False 시도 등)
         qqq = yf.download("QQQ", start=start_date, progress=False, auto_adjust=False)
         soxl = yf.download("SOXL", start=start_date, progress=False, auto_adjust=False)
         
-        if qqq.empty or soxl.empty: return None
+        # 데이터가 비었으면 즉시 에러 리턴
+        if qqq.empty or soxl.empty: 
+            return None
 
-        if isinstance(qqq.columns, pd.MultiIndex): qqq_close = qqq.xs('Close', level=0, axis=1)['QQQ'] if 'QQQ' in qqq.xs('Close', level=0, axis=1).columns else qqq['Close']
+        # 컬럼 정리 (MultiIndex 호환성)
+        if isinstance(qqq.columns, pd.MultiIndex): 
+            try: qqq_close = qqq.xs('Close', level=0, axis=1)['QQQ']
+            except: qqq_close = qqq['Close']
         elif 'Close' in qqq.columns: qqq_close = qqq['Close']
         else: qqq_close = qqq.iloc[:, 0]
 
-        if isinstance(soxl.columns, pd.MultiIndex): soxl_close = soxl.xs('Close', level=0, axis=1)['SOXL'] if 'SOXL' in soxl.xs('Close', level=0, axis=1).columns else soxl['Close']
+        if isinstance(soxl.columns, pd.MultiIndex):
+            try: soxl_close = soxl.xs('Close', level=0, axis=1)['SOXL']
+            except: soxl_close = soxl['Close']
         elif 'Close' in soxl.columns: soxl_close = soxl['Close']
         else: soxl_close = soxl.iloc[:, 0]
 
@@ -63,7 +72,8 @@ def get_data_final(period='max'):
         df.index = df.index.tz_localize(None)
         return df
     except Exception as e:
-        st.error(f"데이터 로딩 중 문제 발생: {e}")
+        # 로그에는 남기지만 UI에는 None 반환하여 main에서 처리
+        print(f"Data Load Error: {e}")
         return None
 
 def calc_mode_series(df_qqq):
@@ -341,12 +351,20 @@ def run_backtest_fixed(df, start_date, end_date, init_cap):
 # 3. 메인 UI
 # ---------------------------------------------------------
 def main():
-    st.title("💎 동파법 마스터 v5.3 (Final UI)")
+    st.title("💎 동파법 마스터 v5.4 (Stability)")
     
     tab_trade, tab_backtest, tab_logic = st.tabs(["💎 실전 트레이딩", "🧪 백테스트", "📚 전략 로직"])
 
-    df = get_data_final()
-    if df is None: return
+    # 데이터 로드 시도
+    with st.spinner("미국 주식 데이터를 불러오는 중..."):
+        df = get_data_final()
+    
+    # [NEW] 데이터 로드 실패 시 에러 메시지 출력 후 안전 종료
+    if df is None:
+        st.error("📉 주식 데이터를 가져오지 못했습니다! (Yahoo Finance 연결 실패)")
+        st.warning("👉 잠시 후 '새로고침(F5)'을 눌러 다시 시도해주세요.")
+        st.info("💡 팁: 이 현상이 지속되면 'requirements.txt'의 yfinance 버전을 확인해주세요.")
+        st.stop() # 여기서 코드 실행 중단 (제목만 나오는 현상 방지)
     
     mode_s, rsi_s = calc_mode_series(df['QQQ'])
     curr_mode = mode_s.iloc[-1]
@@ -445,7 +463,7 @@ def main():
 
         st.markdown("---")
 
-        # 2. 티어 현황 (UI 개선: 요약 먼저 -> 상세 표 접기)
+        # 2. 티어 현황
         st.subheader("📊 나의 티어 현황 (Cloud 저장)")
         if not df_h.empty:
             df_h['매수일'] = pd.to_datetime(df_h['매수일']).dt.date
@@ -464,7 +482,6 @@ def main():
             total_profit = current_val - total_invested
             total_yield_pct = (total_profit / total_invested * 100) if total_invested > 0 else 0
             
-            # [UI 변경] 요약 숫자를 먼저 배치
             st.markdown("#### 📌 전체 계좌 요약")
             sc1, sc2, sc3, sc4 = st.columns(4)
             sc1.metric("총 보유수량", f"{total_qty} 주")
@@ -472,9 +489,7 @@ def main():
             sc3.metric("총 평가손익", f"${total_profit:,.2f}", delta_color="normal")
             sc4.metric("평균 수익률", f"{total_yield_pct:,.2f}%", delta_color="normal")
             
-            st.markdown("") # 간격
-
-            # [UI 변경] 상세 표는 접이식으로 숨김
+            st.markdown("")
             with st.expander("📂 보유 티어 상세 내역 (펼치기/수정)", expanded=False):
                 st.caption("👇 GitHub 데이터 (수정 가능)")
                 edited_h = st.data_editor(
